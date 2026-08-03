@@ -7,10 +7,13 @@ import asyncio
 import base64
 import re
 import math
+import time
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urlparse
 
+import anyio
+import anyio.to_thread
 import httpx
 import structlog
 from app.config import settings
@@ -28,6 +31,14 @@ except ImportError:
     TLDEXTRACT_AVAILABLE = False
 
 logger = structlog.get_logger(__name__)
+
+# WHOIS is slow, flaky, and rate-limited. An unknown result must not read as
+# "slightly risky" — it contributes the same score as a mid-age domain and is
+# always surfaced in `reasons` so a degraded lookup is visible, not silent.
+WHOIS_TIMEOUT_SECONDS = 5.0
+WHOIS_CACHE_TTL_SECONDS = 6 * 60 * 60
+WHOIS_UNKNOWN_SCORE = 0.0
+_whois_cache: dict = {}
 
 # ── Global Whitelist (Never flag these as phishing) ────────────────────────
 GLOBAL_WHITELIST = {
@@ -403,29 +414,50 @@ def _extract_url_signals(url: str) -> tuple:
 # DOMAIN AGE
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _check_domain_age(domain: str) -> tuple:
+def _whois_domain_age(domain: str) -> tuple:
+    """Blocking WHOIS lookup. Never call directly from async code — use _check_domain_age."""
+    w = python_whois.whois(domain)
+    creation_date = w.creation_date
+    if isinstance(creation_date, list):
+        creation_date = creation_date[0]
+    if not creation_date:
+        return WHOIS_UNKNOWN_SCORE, "Domain age unavailable (WHOIS returned no creation date)"
+
+    age_days = (datetime.now() - creation_date).days
+    if age_days < 30:
+        return 0.7, f"Domain is very new ({age_days} days old)"
+    if age_days < 90:
+        return 0.4, f"Domain is relatively new ({age_days} days old)"
+    if age_days < 365:
+        return 0.15, None
+    return 0.0, None
+
+
+async def _check_domain_age(domain: str) -> tuple:
     if not WHOIS_AVAILABLE:
-        return 0.2, None
+        logger.warning("whois_unavailable", domain=domain)
+        return WHOIS_UNKNOWN_SCORE, "Domain age unavailable (WHOIS client not installed)"
+
+    cached = _whois_cache.get(domain)
+    if cached and cached[0] > time.monotonic():
+        return cached[1]
 
     try:
-        w = python_whois.whois(domain)
-        creation_date = w.creation_date
-        if isinstance(creation_date, list):
-            creation_date = creation_date[0]
-        if creation_date:
-            age_days = (datetime.now() - creation_date).days
-            if age_days < 30:
-                return 0.7, f"Domain is very new ({age_days} days old)"
-            elif age_days < 90:
-                return 0.4, f"Domain is relatively new ({age_days} days old)"
-            elif age_days < 365:
-                return 0.15, None
-            else:
-                return 0.0, None
-    except Exception:
-        pass
+        with anyio.fail_after(WHOIS_TIMEOUT_SECONDS):
+            # abandon_on_cancel: a stuck WHOIS server must not hold the request
+            # open past the deadline. The thread is left to finish and discarded.
+            result = await anyio.to_thread.run_sync(
+                _whois_domain_age, domain, abandon_on_cancel=True
+            )
+    except TimeoutError:
+        logger.warning("whois_timeout", domain=domain, timeout=WHOIS_TIMEOUT_SECONDS)
+        return WHOIS_UNKNOWN_SCORE, "Domain age unavailable (WHOIS lookup timed out)"
+    except Exception as exc:
+        logger.warning("whois_failed", domain=domain, error=str(exc))
+        return WHOIS_UNKNOWN_SCORE, "Domain age unavailable (WHOIS lookup failed)"
 
-    return 0.2, None
+    _whois_cache[domain] = (time.monotonic() + WHOIS_CACHE_TTL_SECONDS, result)
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -438,7 +470,7 @@ def _check_domain_age(domain: str) -> tuple:
 # 4. Path keyword analysis integrated
 # ═══════════════════════════════════════════════════════════════════════════
 
-def compute_meta_score(
+async def compute_meta_score(
     url: str,
     client_score: float = 0.5,
     threat_feed_result: Optional[dict] = None,
@@ -463,7 +495,7 @@ def compute_meta_score(
     path_lower = (parsed.path or "").lower()
     
     # ── WHOIS Domain Age check ──
-    whois_score, whois_reason = _check_domain_age(hostname)
+    whois_score, whois_reason = await _check_domain_age(hostname)
     heuristic_score += whois_score
     
     # ── IP-based hosting should trigger IMMEDIATE high score ──

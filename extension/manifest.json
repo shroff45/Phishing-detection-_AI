@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "PhishGuard",
   "version": "1.0.0",
-  "description": "AI-powered real-time phishing detection with visual similarity analysis",
+  "description": "Real-time phishing detection using on-device URL analysis with backend threat-intelligence escalation",
 
   "permissions": [
     "activeTab",
@@ -47,22 +47,5 @@
     "32": "icons/default-32.png",
     "48": "icons/default-48.png",
     "128": "icons/default-128.png"
-  },
-
-  "declarative_net_request": {
-    "rule_resources": []
-  },
-
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "lib/ort-wasm.wasm",
-        "lib/ort-wasm-simd.wasm",
-        "models/model.onnx",
-        "blocked.html",
-        "icons/*"
-      ],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  }
 }

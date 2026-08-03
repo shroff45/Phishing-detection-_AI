@@ -42,21 +42,34 @@ loadModel();
 // ── Constants ─────────────────────────────────────────────────────────────
 let BACKEND_URL = "http://localhost:7860"; // default for first install
 
+// Opt-in, default OFF. Screenshots are un-redacted captures of whatever the
+// user is looking at; they only leave the device if the user asks for it.
+let shareScreenshots = false;
+
+// Default ON, matching the options page's `!== false` read. When off, no URL
+// ever reaches the backend and scoring is local-only.
+let allowBackendEscalation = true;
+
 // Load user-configured backend URL
 chrome.storage.local.get(['settings'], (result) => {
   if (result.settings?.backendUrl) {
     BACKEND_URL = result.settings.backendUrl;
     console.log('[PhishGuard] Using backend:', BACKEND_URL);
   }
+  shareScreenshots = result.settings?.shareScreenshots === true;
+  allowBackendEscalation = result.settings?.allowBackendEscalation !== false;
 });
 
 // Update when user changes settings
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.settings?.newValue?.backendUrl) {
-    const newUrl = changes.settings.newValue.backendUrl;
-    BACKEND_URL = newUrl;
-    console.log('[PhishGuard] Backend URL updated to:', newUrl);
+  if (area !== 'local' || !changes.settings) return;
+  const next = changes.settings.newValue;
+  if (next?.backendUrl) {
+    BACKEND_URL = next.backendUrl;
+    console.log('[PhishGuard] Backend URL updated to:', next.backendUrl);
   }
+  shareScreenshots = next?.shareScreenshots === true;
+  allowBackendEscalation = next?.allowBackendEscalation !== false;
 });
 
 const EXTENSION_API_KEY = "phishguard-dev-key"; // Should match .env
@@ -597,7 +610,9 @@ async function analyzeUrl(tabId, url) {
   // Key fix: Backend can only UPGRADE the verdict, never downgrade it.
   // If local says "phishing", backend cannot flip it to "safe".
 
-  const shouldEscalate = finalScore >= 0.25 || brandCheck.isSpoofing || hostingProvider;
+  const shouldEscalate =
+    allowBackendEscalation &&
+    (finalScore >= 0.25 || brandCheck.isSpoofing || hostingProvider);
 
   if (shouldEscalate) {
     try {
@@ -653,20 +668,28 @@ async function analyzeUrl(tabId, url) {
 }
 
 /**
- * Escalate to backend with optional screenshot for visual analysis.
+ * Escalate to backend for threat-feed and heuristic analysis.
+ *
+ * Screenshots are NOT sent unless the user has explicitly enabled
+ * `shareScreenshots` in settings. The capture is un-redacted, so an escalation
+ * on a banking or health page would otherwise upload account numbers and names.
+ * Default-off keeps the privacy claim true; PRIVACY.md documents the trade-off.
+ * Phase 2 replaces this with derived features (perceptual hash + layout vector).
  */
 async function escalateToBackend(tabId, url, clientScore) {
   let screenshotBase64 = null;
 
-  // Try to capture screenshot for visual analysis
-  try {
-    const dataUrl = await chrome.tabs.captureVisibleTab(null, {
-      format: "png",
-      quality: 70,
-    });
-    screenshotBase64 = dataUrl; // includes data:image/png;base64, prefix
-  } catch (err) {
-    console.debug("[PhishGuard] Screenshot capture failed:", err.message);
+  if (shareScreenshots) {
+    try {
+      // JPEG, not PNG: `quality` is silently ignored for PNG, so a PNG capture
+      // is full-size lossless — the worst case for both bandwidth and PII.
+      screenshotBase64 = await chrome.tabs.captureVisibleTab(null, {
+        format: "jpeg",
+        quality: 60,
+      });
+    } catch (err) {
+      console.debug("[PhishGuard] Screenshot capture failed:", err.message);
+    }
   }
 
   const body = {

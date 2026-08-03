@@ -19,25 +19,47 @@ in real time using machine learning and threat intelligence.
   stored locally and never transmitted.
 
 ### When Backend Escalation Is Enabled
-If you choose to enable "Backend Escalation" in settings,
-the following data may be sent to our analysis server **only**
-for URLs that the local model cannot confidently classify:
+For URLs that the local model cannot confidently classify, the
+following is sent to the analysis server:
 - The URL being analyzed
-- A screenshot of the page (for visual similarity analysis)
-- Pre-extracted feature scores (numerical values, not page content)
+- Your local model's numeric score (a number, not page content)
+
+A page does not have to look dangerous to be escalated. The threshold
+for sending is deliberately lower than the threshold for warning you,
+so some pages that we end up marking safe are still checked against the
+server first.
+
+### Screenshots — Off By Default
+Screenshots are **not** sent unless you explicitly enable
+"Share Screenshots" in settings. That toggle is **off by default**.
+
+If you turn it on, a JPEG of the visible page is uploaded with each
+escalation so the server can check for brand impersonation. Be aware:
+
+- **The capture is not redacted.** Whatever is on screen is included —
+  if you are looking at a bank balance or an account number, that is
+  in the image.
+- The server runs OCR on it, which extracts on-screen text into a
+  second representation.
+- Escalation happens on a minority of pages, but you do not choose
+  which ones.
+
+Leave this off unless you are self-hosting the backend. A future
+release will replace raw screenshots with derived features (a
+perceptual hash and a layout vector) that carry the brand-similarity
+signal without the pixels.
 
 This data is:
 - Used solely to determine if the page is phishing
-- **Not stored** after analysis is complete (default retention: 0 seconds)
 - **Not shared** with any third party
 - **Not used** for advertising, tracking, or profiling
 
 ### What We Never Collect
 - Your browsing history
-- Your personal information
 - Cookies or session tokens
 - Form input data or passwords
-- Data from pages classified as safe (never sent to backend)
+- Page content — the URL and a numeric score are all that is sent
+  (plus a screenshot, only if you opt in)
 
 ## Third-Party Services
 
@@ -52,11 +74,14 @@ When backend escalation is enabled, the server may query:
 
 ## Your Controls
 
-You can at any time:
-- **Disable backend escalation** — all analysis stays local
-- **Clear cached data** — removes all stored scan results
-- **Export your data** — download everything stored locally
-- **Uninstall the extension** — all local data is automatically deleted
+In the extension's settings page you can at any time:
+- **Turn off "Backend Escalation"** — nothing is sent; all analysis
+  stays on your device
+- **Turn off "Share Screenshots"** — already off unless you turned it on
+- **Point at your own server** — set a Backend Server URL you control
+- **Clear cached data** — removes stored scan results and statistics
+- **Export your data** — download everything stored locally as JSON
+- **Uninstall the extension** — all local data is deleted with it
 
 ## Open Source
 

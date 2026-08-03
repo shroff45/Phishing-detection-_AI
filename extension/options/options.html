@@ -375,10 +375,11 @@
 
   <div class="pg-privacy-notice">
     <strong>🔒 Your Privacy Matters</strong>
-    PhishGuard analyzes pages <em>locally on your device</em> by default.
-    URLs are only sent to our backend server when local analysis is
-    inconclusive AND you have enabled backend escalation below.
-    We never store your browsing history, personal data, or cookies.
+    PhishGuard analyzes pages <em>locally on your device</em>. A URL and a
+    numeric score are sent to the backend only when local analysis is
+    inconclusive AND backend escalation is enabled below. Screenshots are
+    never sent unless you separately opt in. We never store your browsing
+    history, personal data, or cookies.
   </div>
 
   <div class="pg-section">
@@ -415,12 +416,29 @@
         <div class="pg-setting-label">Backend Escalation</div>
         <div class="pg-setting-desc">
           Allow sending ambiguous URLs to our analysis server for deeper
-          inspection (WHOIS, VirusTotal, visual similarity).
+          inspection (WHOIS, threat-intelligence feeds).
           When disabled, only local ML analysis is used.
         </div>
       </div>
       <label class="pg-toggle">
         <input type="checkbox" id="setting-backend-escalation" checked>
+        <span class="pg-toggle-slider"></span>
+      </label>
+    </div>
+
+    <div class="pg-setting">
+      <div class="pg-setting-info">
+        <div class="pg-setting-label">Share Screenshots</div>
+        <div class="pg-setting-desc">
+          Off by default. When enabled, a screenshot of the visible page is
+          uploaded with each escalation so the server can check for brand
+          impersonation. Captures are <strong>not redacted</strong> — if the
+          page shows an account number or your name, it is included. Leave this
+          off unless you are self-hosting the backend.
+        </div>
+      </div>
+      <label class="pg-toggle">
+        <input type="checkbox" id="setting-share-screenshots">
         <span class="pg-toggle-slider"></span>
       </label>
     </div>

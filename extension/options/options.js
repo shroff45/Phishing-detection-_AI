@@ -51,6 +51,8 @@ async function loadSettings() {
     settings.showWarningOverlay !== false;
   document.getElementById("setting-backend-escalation").checked =
     settings.allowBackendEscalation !== false;
+  document.getElementById("setting-share-screenshots").checked =
+    settings.shareScreenshots === true;
   document.getElementById("setting-backend-url").value =
     settings.backendUrl || "";
 }
@@ -61,6 +63,7 @@ async function saveSettings() {
     autoScan: document.getElementById("setting-auto-scan").checked,
     showWarningOverlay: document.getElementById("setting-show-overlay").checked,
     allowBackendEscalation: document.getElementById("setting-backend-escalation").checked,
+    shareScreenshots: document.getElementById("setting-share-screenshots").checked,
     backendUrl: document.getElementById("setting-backend-url").value.trim(),
   };
 

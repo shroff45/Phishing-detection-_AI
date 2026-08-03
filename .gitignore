@@ -8,14 +8,15 @@ __pycache__/
 
 # Distribution / packaging
 .Python
-build/
+/build/
 develop-eggs/
-dist/
+/dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
+!extension/lib/
 parts/
 sdist/
 var/
@@ -153,9 +154,9 @@ cython_debug/
 .vscode/
 
 # Project-specific
-ml-training/model.pkl
-ml-training/dataset.csv
-ml-training/data/
+ml-retrain/prepared/
+ml-retrain/data/
+ml-retrain/*.pkl
 backend/test_data/
 extension/node_modules/
 extension/dist/
