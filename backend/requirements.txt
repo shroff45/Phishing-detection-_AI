@@ -1,22 +1,30 @@
 # PhishGuard Backend Dependencies
-# Version ranges instead of pins — avoids conflicts with other packages
+#
+# Exact pins. A range means two people who clone this repo a month apart get
+# different code, and a scoring regression traced to a transitive minor bump is
+# a bad day. These versions are the ones the test suite is green against.
+#
+# To upgrade: change the pin, run `pytest ../tests/ tests/`, commit both the
+# pin and the result. Do not loosen to `>=` to make an install succeed.
 
-fastapi>=0.115.0
-uvicorn[standard]>=0.24.0
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
-python-dotenv>=1.0.0
-numpy>=1.24.0
-structlog>=23.2.0
-tldextract>=5.1.0
-slowapi>=0.1.9
-httpx>=0.25.0
-python-whois>=0.8.0
-Pillow>=10.1.0
-scipy>=1.11.0
-easyocr>=1.7.0
-python-multipart>=0.0.6
-anyio>=4.8.0
-pytest>=8.0.0
-pytest-asyncio>=0.23.0
+fastapi==0.135.2
+uvicorn[standard]==0.24.0
+pydantic==2.11.7
+pydantic-settings==2.12.0
+python-dotenv==1.2.1
+numpy==2.4.3
+structlog==25.5.0
+tldextract==5.3.1
+slowapi==0.1.9
+httpx==0.28.1
+python-whois==0.9.6
+Pillow==11.3.0
+scipy==1.16.2
+easyocr==1.7.2
+python-multipart==0.0.22
+anyio==4.12.1
 
+# Test-only. Kept here rather than in a separate file because CI installs this
+# one file and immediately runs pytest.
+pytest==9.0.2
+pytest-asyncio==1.3.0

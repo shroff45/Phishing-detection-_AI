@@ -1,0 +1,6 @@
+# onnxruntime-web 1.17.3 — vendored from
+# https://registry.npmjs.org/onnxruntime-web/-/onnxruntime-web-1.17.3.tgz
+# Verify with: python scripts/verify_vendored_ort.py
+88490a46ffcbdb497d7c11402f6b6d39a97f00185f641f0d0a946556ce931752  ort.min.js
+969afd00c79afead28a90b6acd01bd64abe4b5ac8bc9650c3dee3aefc6e0cea6  ort-wasm.wasm
+6783fcd6647ce1b426a527c31412a9c40894552faa609e9c931b3239a3438071  ort-wasm-simd.wasm

@@ -1,0 +1,9 @@
+# Vendored ONNX Runtime is checksum-pinned. Any line-ending translation changes
+# the bytes and breaks scripts/verify_vendored_ort.py on clone.
+extension/lib/ort.min.js  -text
+extension/lib/*.wasm      binary
+extension/lib/CHECKSUMS.txt -text
+
+# The shipped model is compared byte-for-byte against the training output.
+extension/models/*.onnx  binary
+*.onnx                   binary

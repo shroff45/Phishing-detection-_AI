@@ -3,6 +3,8 @@ PhishGuard Backend — FastAPI Application
 ─────────────────────────────────────────
 """
 import base64
+import binascii
+import uuid
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urlparse
@@ -63,10 +65,15 @@ class QuickCheckRequest(BaseModel):
     url: str
     client_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
+# 8 MiB decoded. Screenshots are downscaled client-side; anything larger is an
+# attempt to drive the image decoder into memory pressure, not a real capture.
+MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024
+MAX_SCREENSHOT_B64_CHARS = (MAX_SCREENSHOT_BYTES * 4) // 3 + 128
+
 class FullAnalysisRequest(BaseModel):
     url: str
     client_score: float = Field(default=0.0, ge=0.0, le=1.0)
-    screenshot_base64: Optional[str] = None
+    screenshot_base64: Optional[str] = Field(default=None, max_length=MAX_SCREENSHOT_B64_CHARS)
 
 @app.get("/health")
 async def health_check():
@@ -91,11 +98,11 @@ async def analyze_quick(request: QuickCheckRequest):
             threat_result["is_known_threat"] = True
             threat_result["source"] = "phishguard_feed"
         
-        meta = compute_meta_score(url=request.url, client_score=request.client_score, threat_feed_result=threat_result)
+        meta = await compute_meta_score(url=request.url, client_score=request.client_score, threat_feed_result=threat_result)
         return {
-            "url": request.url, 
-            "verdict": meta["verdict"], 
-            "score": meta["score"], 
+            "url": request.url,
+            "verdict": meta["verdict"],
+            "score": meta["score"],
             "confidence": meta.get("confidence", 0.0),
             "reasons": meta.get("reasons", []),
             "source": meta.get("source"),
@@ -105,8 +112,9 @@ async def analyze_quick(request: QuickCheckRequest):
             "threat_feed": threat_result
         }
     except Exception as e:
-        logger.error("quick_analysis_failed", error=str(e), url=str(request.url))
-        raise HTTPException(status_code=500, detail=str(e))
+        correlation_id = uuid.uuid4().hex
+        logger.error("quick_analysis_failed", error=str(e), url=str(request.url), correlation_id=correlation_id)
+        raise HTTPException(status_code=500, detail=f"Analysis failed (ref {correlation_id})")
 
 @app.post("/api/v1/analyze/full", dependencies=[Depends(verify_api_key)])
 async def analyze_full(request: FullAnalysisRequest):
@@ -120,15 +128,21 @@ async def analyze_full(request: FullAnalysisRequest):
         visual_result = None
         b64_data = request.screenshot_base64
         if b64_data and isinstance(b64_data, str):
-            if "," in b64_data: 
+            if "," in b64_data:
                 b64_data = b64_data.split(",", 1)[1]
-            visual_result = await visual_analyzer.analyze_screenshot(base64.b64decode(b64_data), domain)
+            try:
+                screenshot_bytes = base64.b64decode(b64_data, validate=True)
+            except (binascii.Error, ValueError):
+                raise HTTPException(status_code=400, detail="screenshot_base64 is not valid base64")
+            if len(screenshot_bytes) > MAX_SCREENSHOT_BYTES:
+                raise HTTPException(status_code=413, detail="Screenshot exceeds maximum size")
+            visual_result = await visual_analyzer.analyze_screenshot(screenshot_bytes, domain)
 
-        meta = compute_meta_score(url=request.url, client_score=request.client_score, threat_feed_result=threat_result, visual_result=visual_result)
+        meta = await compute_meta_score(url=request.url, client_score=request.client_score, threat_feed_result=threat_result, visual_result=visual_result)
         return {
-            "url": request.url, 
-            "verdict": meta["verdict"], 
-            "score": meta["score"], 
+            "url": request.url,
+            "verdict": meta["verdict"],
+            "score": meta["score"],
             "confidence": meta.get("confidence", 0.0),
             "reasons": meta.get("reasons", []),
             "source": meta.get("source"),
@@ -138,9 +152,12 @@ async def analyze_full(request: FullAnalysisRequest):
             "threat_feed": threat_result,
             "visual_analysis": visual_result
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error("full_analysis_failed", error=str(e), url=str(request.url))
-        raise HTTPException(status_code=500, detail=str(e))
+        correlation_id = uuid.uuid4().hex
+        logger.error("full_analysis_failed", error=str(e), url=str(request.url), correlation_id=correlation_id)
+        raise HTTPException(status_code=500, detail=f"Analysis failed (ref {correlation_id})")
 
 @app.post("/api/v1/feed/update", dependencies=[Depends(verify_api_key)])
 async def update_feeds():
