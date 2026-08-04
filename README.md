@@ -118,6 +118,10 @@ cd backend && python -m pytest ../tests/ tests/ -q
 Both paths matter. CI only runs `../tests/`, which is how assertion bugs in
 `backend/tests/` went unnoticed.
 
+Expect `20 passed, 15 skipped` from the root suite. Those 15 skips are the
+feature-parity cases and they are a **known failure wearing a skip's clothing** —
+see [Known gaps](#known-gaps).
+
 ---
 
 ## API
@@ -169,7 +173,7 @@ Honest accounting. "Designed" means the code exists but is not load-bearing;
 "planned" means it does not exist.
 
 ### Built and working
-- 30-feature lexical extraction, parity-tested between JS and Python
+- 30-feature lexical extraction in both JS and Python
 - On-device ONNX inference with vendored, checksum-pinned runtime
 - Two-tier escalation with enforced verdict monotonicity
 - Threat-feed lookup, WHOIS with a real 5s timeout and visible degradation
@@ -195,6 +199,13 @@ Honest accounting. "Designed" means the code exists but is not load-bearing;
   is plain async functions, which is the right starting point.
 
 ### Known gaps
+- **The JS/Python feature parity test does not actually run.** All 15 cases
+  report as skipped even with Node installed — the harness slices
+  `extractLexicalFeatures` out of `service-worker.js` by brace matching and the
+  result fails to execute, which the test swallows as a skip. So the claim that
+  the two extractors agree is currently unverified. This matters more than it
+  looks: a drift between them means the model scores different features than it
+  was trained on.
 - `autoScan` and `showWarningOverlay` are saved by the options page and read by
   nothing.
 - `ml-training/` and `ml-retrain/` have diverged and neither is marked
