@@ -17,6 +17,7 @@ import anyio.to_thread
 import httpx
 import structlog
 from app.config import settings
+from app.services.signals import gather_signals
 
 try:
     import whois as python_whois
@@ -478,92 +479,104 @@ async def compute_meta_score(
 ) -> dict:
     """
     Compute final phishing score from multiple signals.
-    Optimized for zero-day IP-based detection.
+
+    Signal blend (all capped to 1.0 before weighting):
+      primary     = max(threat_intel, heuristics)  × 0.45
+      stage3      = cert_age + dns_asn + redirect     × 0.35
+      client_ml   = client_score                     × 0.15
+      visual      = visual similarity                 × 0.05
     """
-    # Base score from client ML
-    base_score_weighted = client_score * 0.30  # 30% weight
-    
-    # Threat feed score (highest priority secondary source)
+    parsed    = urlparse(url)
+    hostname  = (parsed.netloc or "").lower()
+    host_only = hostname.split(":")[0]
+    path_lower = (parsed.path or "").lower()
+
+    # ── Run Stage-3 signals in parallel with the rest of scoring ────────────
+    stage3_task = asyncio.create_task(gather_signals(url=url, domain=host_only))
+
+    # ── Threat-feed score ───────────────────────────────────────────────────
     ti_score = 0.0
     if threat_feed_result and threat_feed_result.get("is_known_threat"):
-        ti_score = 0.70  # Known threat = auto 0.70 floor
-    
-    # URL heuristic scoring
+        ti_score = 0.70
+
+    # ── Heuristic scoring ───────────────────────────────────────────────────
     heuristic_score = 0.0
-    parsed = urlparse(url)
-    hostname = (parsed.netloc or "").lower()
-    path_lower = (parsed.path or "").lower()
-    
-    # ── WHOIS Domain Age check ──
+
+    # WHOIS domain age
     whois_score, whois_reason = await _check_domain_age(hostname)
     heuristic_score += whois_score
-    
-    # ── IP-based hosting should trigger IMMEDIATE high score ──
+
+    # IP address hosting
     ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
-    host_only = hostname.split(':')[0]
     if re.match(ip_pattern, host_only):
-        heuristic_score += 0.65  
-        
-    # Check for localhost/private IPs (highly suspicious for production traffic)
+        heuristic_score += 0.65
     if host_only.startswith('127.') or host_only.startswith('192.168.') or host_only.startswith('10.'):
-        heuristic_score += 0.15 
-    
-    # Suspicious TLDs
+        heuristic_score += 0.15
+
+    # Suspicious TLD
     if any(hostname.endswith(tld) for tld in SUSPICIOUS_TLDS):
         heuristic_score += 0.25
-    
-    # Typosquatting/Phishing patterns in URL
+
+    # Phishing URL patterns
     for pattern in PHISHING_PATTERNS:
         if re.search(pattern, url, re.IGNORECASE):
             heuristic_score += 0.20
             break
-    
-    # Sensitive keywords in path
+
+    # Sensitive path keywords
     if any(kw in path_lower for kw in ['login', 'verify', 'account', 'signin', 'update']):
         heuristic_score += 0.15
-    
+
     # No HTTPS
     if parsed.scheme != 'https':
         heuristic_score += 0.10
-    
-    # Visual similarity score (if available)
-    visual_score_weighted = 0.0
+
+    # @ symbol
+    if '@' in url:
+        heuristic_score += 0.15
+
+    # ── Await Stage-3 signals (started in parallel above) ─────────────────
+    stage3 = await stage3_task
+    stage3_score = stage3.get("total_score", 0.0)
+
+    # ── Visual similarity ─────────────────────────────────────────────────
+    visual_score = 0.0
     if visual_result and visual_result.get("is_impersonation"):
-        visual_score_weighted = visual_result.get("confidence", 0.7) * 0.20
-    
-    # ── COMBINE SCORES ──
-    # Use the HIGHEST of (threat_feed, heuristics) as primary to prevent dilution
-    primary_score = max(ti_score, heuristic_score)
-    
-    final_score = min(1.0, 
-        primary_score * 0.60 +      # Primary signal
-        base_score_weighted +       # Client ML
-        visual_score_weighted       # Visual analysis
+        visual_score = visual_result.get("confidence", 0.7)
+
+    # ── Blend ─────────────────────────────────────────────────────────────
+    #   primary     = max(threat_intel, heuristics)  × 0.45
+    #   stage3                                       × 0.35
+    #   client_ml                                    × 0.15
+    #   visual                                       × 0.05
+    primary_score = min(1.0, max(ti_score, heuristic_score))
+    final_score = min(1.0,
+        primary_score   * 0.45
+        + stage3_score  * 0.35
+        + client_score  * 0.15
+        + visual_score  * 0.05
     )
-    
-    # ── MONOTONIC FLOOR ──
-    if heuristic_score >= 0.65:
-        final_score = max(final_score, 0.75)  # IP-based = minimum 0.75
-    elif heuristic_score >= 0.40:
-        final_score = max(final_score, 0.50)  # High risk heuristics = minimum 0.50
-    
-    # If confirmed threat feed, ensure phishing verdict
+
+    # ── Monotonic floors ──────────────────────────────────────────────────
+    if heuristic_score >= 0.65 or stage3_score >= 0.55:
+        final_score = max(final_score, 0.75)
+    elif heuristic_score >= 0.40 or stage3_score >= 0.35:
+        final_score = max(final_score, 0.50)
     if ti_score >= 0.70:
         final_score = max(final_score, 0.70)
 
-    # Determine verdict
+    # ── Verdict ───────────────────────────────────────────────────────────
     if final_score >= 0.65:
         verdict = "phishing"
     elif final_score >= 0.35:
         verdict = "suspicious"
     else:
         verdict = "safe"
-    
-    # Compute confidence
+
     confidence = abs(final_score - 0.5) * 2.0
-    
-    # Build reasons list
-    reasons = []
+
+    # ── Reasons ───────────────────────────────────────────────────────────
+    reasons: list[str] = []
     if re.match(ip_pattern, host_only):
         reasons.append("URL uses an IP address instead of a domain name")
     if host_only.startswith('192.168.') or host_only.startswith('10.') or host_only.startswith('127.'):
@@ -575,28 +588,37 @@ async def compute_meta_score(
     if parsed.scheme != 'https':
         reasons.append("URL does not use HTTPS")
     if any(kw in path_lower for kw in ['login', 'verify', 'account', 'signin']):
-        reasons.append("URL path contains sensitive keywords (login/verify)")
+        reasons.append("URL path contains sensitive keywords")
     if threat_feed_result and threat_feed_result.get("is_known_threat"):
         source = threat_feed_result.get("source", "unknown")
         reasons.append(f"URL found in threat intelligence feed ({source})")
     if whois_reason:
         reasons.append(whois_reason)
-    
+    reasons.extend(stage3.get("reasons", []))
+
     if not reasons:
         reasons = ["No significant phishing indicators detected"]
-    
+
     return {
-        "score": round(final_score, 4),
-        "verdict": verdict,
-        "confidence": round(confidence, 4),
-        "reasons": reasons,
-        "source": threat_feed_result.get("source") if threat_feed_result else None,
+        "score":         round(final_score, 4),
+        "verdict":       verdict,
+        "confidence":    round(confidence, 4),
+        "reasons":       reasons,
+        "source":        threat_feed_result.get("source") if threat_feed_result else None,
         "feeds_checked": threat_feed_result.get("feeds_checked", []) if threat_feed_result else [],
         "feeds_flagged": threat_feed_result.get("feeds_flagged", []) if threat_feed_result else [],
         "signals": [
-            f"heuristic_score={round(heuristic_score, 2)}",
+            f"heuristic_score={round(primary_score, 2)}",
+            f"stage3_score={round(stage3_score, 2)}",
             f"threat_intel_score={round(ti_score, 2)}",
-            f"client_ml_score={round(base_score_weighted, 2)}",
-            f"visual_score={round(visual_score_weighted, 2)}"
-        ]
+            f"client_ml_score={round(client_score, 2)}",
+            f"visual_score={round(visual_score, 2)}",
+        ],
+        "stage3_signals": {
+            "cert_age_h":    stage3["cert"].get("cert_age_h"),
+            "asn":           stage3["dns_asn"].get("asn"),
+            "redirect_hops": len(stage3["redirect"].get("chain", [])) - 1,
+            "final_url":     stage3["redirect"].get("final_url"),
+            "cross_origin":  stage3["redirect"].get("cross_origin", False),
+        },
     }
