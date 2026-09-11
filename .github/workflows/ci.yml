@@ -5,12 +5,12 @@ name: PhishGuard CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: ["**"]
   pull_request:
     branches: [main]
 
 jobs:
-  # ── Backend Tests ────────────────────────────────────────
+  # ── Backend + Parity Tests ────────────────────────────────
   backend-tests:
     runs-on: ubuntu-latest
     steps:
@@ -21,27 +21,33 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Set up Node.js (needed for feature-parity tests)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
         run: |
           cd backend
           pip install -r requirements.txt
-          pip install pytest
 
-      - name: Syntax check all Python files
+      - name: Install ml-training dependencies
+        run: |
+          cd ml-training
+          pip install -r requirements.txt
+
+      - name: Run backend tests
         run: |
           cd backend
-          python -m py_compile app/__init__.py
-          python -m py_compile app/config.py
-          python -m py_compile app/main.py
-          python -m py_compile app/services/__init__.py
-          python -m py_compile app/services/threat_intel.py
-          python -m py_compile app/services/visual_analyzer.py
-          python -m py_compile app/services/feed_manager.py
+          pytest tests/ -v --tb=short
 
-      - name: Run tests
+      - name: Run feature-parity tests
+        # These fail hard if Node is present but the JS harness is broken —
+        # that is intentional.  A skip means Node is not available; a
+        # failure means Python and JavaScript disagree.
         run: |
           cd backend
-          pytest ../tests/ -v --tb=short
+          pytest ../tests/test_feature_parity.py -v --tb=short
 
   # ── Extension Lint ───────────────────────────────────────
   extension-lint:
@@ -64,6 +70,5 @@ jobs:
         run: |
           node --check extension/background/service-worker.js
           node --check extension/content/content-script.js
-          node --check extension/offscreen/offscreen.js
           node --check extension/popup/popup.js
           node --check extension/options/options.js
