@@ -232,6 +232,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const TRAIL_SOURCE_NAMES = {
     client_ml:        "On-device ML",
     threat_feeds:      "Threat Feeds",
+    whitelist:         "Whitelist",
     domain_age:       "Domain Age (WHOIS)",
     cert_age:         "Certificate Age (CT Logs)",
     dns_asn:          "DNS & Hosting",
@@ -241,6 +242,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const TRAIL_ICONS = {
     client_ml:        "🧠",
     threat_feeds:      "📡",
+    whitelist:         "✅",
     domain_age:       "🗓️",
     cert_age:         "🔒",
     dns_asn:          "🌐",

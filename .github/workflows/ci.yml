@@ -31,23 +31,57 @@ jobs:
           cd backend
           pip install -r requirements.txt
 
-      - name: Install ml-training dependencies
-        run: |
-          cd ml-training
-          pip install -r requirements.txt
-
       - name: Run backend tests
         run: |
           cd backend
           pytest tests/ -v --tb=short
 
-      - name: Run feature-parity tests
-        # These fail hard if Node is present but the JS harness is broken —
-        # that is intentional.  A skip means Node is not available; a
-        # failure means Python and JavaScript disagree.
+      - name: Run root test suite (parity + lexical)
+        # ../tests/ includes test_feature_parity.py — the single most
+        # important test in the repo. A harness that cannot produce JS
+        # must FAIL, not skip; a skip here means Node is absent.
         run: |
           cd backend
-          pytest ../tests/test_feature_parity.py -v --tb=short
+          pytest ../tests/ -v --tb=short
+
+  # ── Evaluation Gate (Stage 2) ─────────────────────────────
+  # FPR at the shipped operating point, plus golden-set verification.
+  # This is a security control (THREAT-MODEL A3: retrain poisoning), not
+  # a quality gate — a regression here must block the merge.
+  eval-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install evaluation dependencies
+        run: |
+          cd ml-retrain
+          pip install -r requirements.txt
+
+      - name: Run the evaluation gate
+        # evaluate.py exits non-zero on gate failure, so a regression
+        # fails this job. The committed evaluation_report.json is the
+        # incumbent baseline for the next run.
+        run: |
+          cd ml-retrain
+          python evaluate.py
+
+      - name: Check whitelist freshness
+        # The golden set measures model + shipped whitelist. If
+        # service-worker.js and shipped_whitelist.py disagree, the gate
+        # is measuring a stale operating point.
+        run: |
+          python scripts/extract_whitelist.py
+          if ! git diff --quiet -- ml-retrain/shipped_whitelist.py; then
+            echo "::error::shipped_whitelist.py is out of date with service-worker.js — run scripts/extract_whitelist.py and commit"
+            git diff -- ml-retrain/shipped_whitelist.py
+            exit 1
+          fi
 
   # ── Extension Lint ───────────────────────────────────────
   extension-lint:
@@ -72,3 +106,9 @@ jobs:
           node --check extension/content/content-script.js
           node --check extension/popup/popup.js
           node --check extension/options/options.js
+
+      - name: Vendored ONNX runtime checksum
+        # Phase 0 hardening: the WASM bundle must match its pinned
+        # SHA-256 or the extension is running unpinned third-party code.
+        run: |
+          python scripts/verify_vendored_ort.py

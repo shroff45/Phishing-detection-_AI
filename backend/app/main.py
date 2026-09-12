@@ -91,13 +91,13 @@ async def health_check():
 @app.post("/api/v1/analyze/quick", dependencies=[Depends(verify_api_key)])
 async def analyze_quick(request: QuickCheckRequest):
     try:
-        threat_result = await check_threat_feeds(request.url)
+        threat_result = await check_threat_feeds(request.url, client_score=request.client_score)
         parsed = urlparse(request.url)
         domain = parsed.netloc or ""
         if feed_manager.is_domain_blocked(domain):
             threat_result["is_known_threat"] = True
             threat_result["source"] = "phishguard_feed"
-        
+
         meta = await compute_meta_score(url=request.url, client_score=request.client_score, threat_feed_result=threat_result)
         return {
             "url": request.url,
@@ -120,7 +120,7 @@ async def analyze_quick(request: QuickCheckRequest):
 @app.post("/api/v1/analyze/full", dependencies=[Depends(verify_api_key)])
 async def analyze_full(request: FullAnalysisRequest):
     try:
-        threat_result = await check_threat_feeds(request.url)
+        threat_result = await check_threat_feeds(request.url, client_score=request.client_score)
         parsed = urlparse(request.url)
         domain = parsed.netloc or ""
         if feed_manager.is_domain_blocked(domain):

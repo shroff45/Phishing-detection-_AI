@@ -222,4 +222,71 @@
 
   if (document.readyState === "complete") setTimeout(runAnalysis, 300);
   else window.addEventListener("load", () => setTimeout(runAnalysis, 300));
+
+  // ── In-page warning overlay (showWarningOverlay setting) ─────────────
+  // The service worker sends VERDICT_UPDATE when a page lands on a
+  // phishing verdict and the user has the overlay enabled. The banner is
+  // dismissible and never blocks interaction — it warns, it does not
+  // gate. Previously this toggle was saved by the options page and read
+  // by nothing.
+  let overlayShown = false;
+
+  chrome.runtime.onMessage.addListener((message, _sender, _sendResponse) => {
+    if (message?.type !== "VERDICT_UPDATE") return;
+    if (message.verdict === "phishing" && !overlayShown) {
+      showWarningOverlay(message);
+    }
+  });
+
+  function showWarningOverlay({ reasons }) {
+    if (document.getElementById("phishguard-warning-banner")) return;
+    overlayShown = true;
+
+    const banner = document.createElement("div");
+    banner.id = "phishguard-warning-banner";
+    banner.setAttribute("role", "alert");
+    Object.assign(banner.style, {
+      position: "fixed",
+      top: "0",
+      left: "0",
+      right: "0",
+      zIndex: "2147483647",
+      backgroundColor: "#93000a",
+      color: "#ffffff",
+      fontFamily: "system-ui, -apple-system, sans-serif",
+      fontSize: "14px",
+      padding: "12px 48px 12px 16px",
+      borderBottom: "2px solid #690005",
+      textAlign: "center",
+      lineHeight: "1.4",
+    });
+
+    const strong = document.createElement("strong");
+    strong.textContent = "⚠ PhishGuard: this page shows strong phishing indicators.";
+    const reason = document.createElement("div");
+    reason.style.cssText = "opacity:0.9;font-size:12px;margin-top:2px;";
+    reason.textContent = (reasons && reasons[0]) || "Do not enter credentials or personal information.";
+
+    const dismiss = document.createElement("button");
+    dismiss.textContent = "✕";
+    dismiss.setAttribute("aria-label", "Dismiss warning");
+    Object.assign(dismiss.style, {
+      position: "absolute",
+      right: "10px",
+      top: "50%",
+      transform: "translateY(-50%)",
+      background: "transparent",
+      border: "none",
+      color: "#ffffff",
+      fontSize: "16px",
+      cursor: "pointer",
+      padding: "4px 8px",
+    });
+    dismiss.addEventListener("click", () => banner.remove());
+
+    banner.appendChild(strong);
+    banner.appendChild(reason);
+    banner.appendChild(dismiss);
+    document.documentElement.appendChild(banner);
+  }
 })();

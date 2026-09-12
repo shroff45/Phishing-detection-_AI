@@ -32,8 +32,38 @@
     "f29_doubleSlashCount",
     "f30_longestSubdomainLen"
   ],
-  "train_size": 84418,
-  "val_size": 12060,
-  "cal_size": 12060,
-  "test_size": 12060
+  "train_size": 84785,
+  "val_size": 11455,
+  "cal_size": 12261,
+  "test_size": 12087,
+  "split_strategy": "domain_disjoint_group_shuffle",
+  "group_key": "etld_plus_1",
+  "domain_disjoint": true,
+  "num_unique_domains": 93925,
+  "class_balance": {
+    "train": {
+      "n": 84785,
+      "phishing": 42526,
+      "legitimate": 42259,
+      "phish_frac": 0.5015745709736392
+    },
+    "val": {
+      "n": 11455,
+      "phishing": 5738,
+      "legitimate": 5717,
+      "phish_frac": 0.5009166302924487
+    },
+    "cal": {
+      "n": 12261,
+      "phishing": 6578,
+      "legitimate": 5683,
+      "phish_frac": 0.5364978386754751
+    },
+    "test": {
+      "n": 12087,
+      "phishing": 5452,
+      "legitimate": 6635,
+      "phish_frac": 0.4510631256722098
+    }
+  }
 }

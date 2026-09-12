@@ -1,5 +1,14 @@
 # PhishGuard — Weekly Model Retraining
-# Runs every Sunday at 2:00 AM UTC
+# Runs every Sunday at 2:00 AM UTC over the CANONICAL ml-retrain tree.
+#
+# Stage 2/4 fixes baked in:
+#   - Was pointed at ml-training/ (dead tree, missing data, wrong model
+#     names) — the old workflow was a no-op that reported success.
+#   - The evaluation gate now runs INSIDE the pipeline: a candidate
+#     that fails the gate (FPR regression or golden-set failure) is
+#     never deployed or committed.
+#   - deploy.py copies the model to extension/models/model.onnx and
+#     backend/app/models/ — the real shipped paths.
 
 name: Weekly Model Retrain
 
@@ -7,6 +16,9 @@ on:
   schedule:
     - cron: "0 2 * * 0"  # Every Sunday at 2 AM UTC
   workflow_dispatch:       # Allow manual trigger
+
+permissions:
+  contents: write
 
 jobs:
   retrain:
@@ -21,18 +33,38 @@ jobs:
 
       - name: Install training dependencies
         run: |
-          cd ml-training
+          cd ml-retrain
           pip install -r requirements.txt
 
-      - name: Run retraining pipeline
+      # Run prepare + train only. evaluate/deploy run as explicit steps
+      # below so a gate failure is visible as a distinct failed step in
+      # the Actions log, not folded into a generic pipeline crash.
+      - name: Prepare domain-disjoint data splits
         run: |
-          cd ml-training
-          python retrain_pipeline.py
+          cd ml-retrain
+          python prepare_data.py
+
+      - name: Train candidate models
+        run: |
+          cd ml-retrain
+          python train_model.py
+
+      - name: Evaluation gate (FPR at shipped threshold + golden set)
+        # Exits non-zero on regression — blocks deploy AND commit.
+        run: |
+          cd ml-retrain
+          python evaluate.py
+
+      - name: Deploy to extension and backend (gated)
+        # Reads evaluation_report.json; refuses to copy unless pass:true.
+        run: |
+          cd ml-retrain
+          python deploy.py
 
       - name: Check if model was updated
         id: check_model
         run: |
-          if git diff --name-only | grep -q "url_classifier.onnx"; then
+          if git diff --name-only | grep -q "extension/models/model.onnx"; then
             echo "model_updated=true" >> $GITHUB_OUTPUT
           else
             echo "model_updated=false" >> $GITHUB_OUTPUT
@@ -43,16 +75,15 @@ jobs:
         run: |
           git config user.name "PhishGuard Bot"
           git config user.email "bot@phishguard.dev"
-          git add extension/models/url_classifier.onnx
-          git add backend/models/url_classifier.onnx
-          git add ml-training/reports/
-          git add ml-training/retrain_logs/
-          git commit -m "chore: auto-retrain model $(date +%Y-%m-%d)"
+          git add extension/models/model.onnx extension/models/model_config.json
+          git add backend/app/models/model.onnx backend/app/models/model_config.json
+          git add ml-retrain/models/ ml-retrain/prepared/ ml-retrain/reports/
+          git commit -m "chore: auto-retrain model $(date +%Y-%m-%d) (gated)"
           git push
 
       - name: Upload training reports
         uses: actions/upload-artifact@v4
         with:
           name: training-reports
-          path: ml-training/reports/
+          path: ml-retrain/reports/
           retention-days: 30

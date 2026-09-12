@@ -155,3 +155,13 @@ TEST_SIZE = 0.10
 VAL_SIZE = 0.10
 CALIBRATION_SIZE = 0.10
 TARGET_FPR = 0.008
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Shipped operating point
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# The extension bands client scores at 0.35 (suspicious) / 0.65 (phishing)
+# — service-worker.js STEP 4. Model selection and the evaluation gate
+# measure at the threshold users actually get, never at a model-internal
+# optimum. evaluate.py reads this so there is one source of truth.
+SHIPPED_SUSPICIOUS_THRESHOLD = 0.35
+SHIPPED_PHISHING_THRESHOLD = 0.65

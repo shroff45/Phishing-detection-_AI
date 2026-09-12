@@ -1,9 +1,21 @@
 {
-  "best_model": "random_forest",
-  "optimal_threshold": 0.7980721946781608,
-  "test_fpr": 0.017412935323383085,
-  "test_fnr": 0.06865671641791045,
-  "test_accuracy": 0.9569651741293532,
-  "test_f1": 0.9558335460811845,
-  "test_auc": 0.9933695948120096
+  "best_model": "gradient_boosting",
+  "shipped_variant": "raw",
+  "optimal_threshold": 0.813136234732948,
+  "shipped_threshold": 0.35,
+  "val_fpr_at_shipped": 0.09323071541018016,
+  "val_fnr_at_shipped": 0.03537818055071453,
+  "test_fpr": 0.03798040693293142,
+  "test_fnr": 0.03319882611885547,
+  "test_accuracy": 0.9641763878547199,
+  "test_f1": 0.9605466970387244,
+  "test_auc": 0.9931946739676707,
+  "cv_strategy": "group_kfold_domain_disjoint",
+  "cv_auc": 0.98991182028743,
+  "cv_std": 0.002146492884917437,
+  "best_params": {
+    "clf__max_depth": 6,
+    "clf__n_estimators": 200
+  },
+  "pipeline": "standard_scaler+clf"
 }

@@ -1,8 +1,11 @@
 {
-  "test_accuracy": 0.9569651741293532,
-  "test_fpr": 0.017412935323383085,
-  "test_fnr": 0.06865671641791045,
-  "test_auc": 0.9933695948120096,
-  "threshold": 0.7980721946781608,
-  "known_url_pass": false
+  "shipped_threshold": 0.35,
+  "shipped_fpr": 0.03798040693293142,
+  "shipped_fnr": 0.03319882611885547,
+  "shipped_auc": 0.9931937064224546,
+  "test_accuracy": 0.9641763878547199,
+  "known_url_pass": true,
+  "pass": true,
+  "gate_reasons": [],
+  "split_basis": "domain_disjoint_group_shuffle"
 }

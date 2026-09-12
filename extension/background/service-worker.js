@@ -50,6 +50,16 @@ let shareScreenshots = false;
 // ever reaches the backend and scoring is local-only.
 let allowBackendEscalation = true;
 
+// autoScan (default ON): when OFF, navigation-triggered analysis is
+// disabled entirely — only the popup's Re-analyze button scans. Wired to
+// the options-page toggle that previously saved to nothing.
+let autoScan = true;
+
+// showWarningOverlay (default ON): when a page is verdict=phishing, tell
+// the content script so it can render the in-page warning banner. Wired to
+// the options-page toggle that previously saved to nothing.
+let showWarningOverlay = true;
+
 // Load user-configured backend URL
 chrome.storage.local.get(['settings'], (result) => {
   if (result.settings?.backendUrl) {
@@ -58,6 +68,8 @@ chrome.storage.local.get(['settings'], (result) => {
   }
   shareScreenshots = result.settings?.shareScreenshots === true;
   allowBackendEscalation = result.settings?.allowBackendEscalation !== false;
+  autoScan = result.settings?.autoScan !== false;
+  showWarningOverlay = result.settings?.showWarningOverlay !== false;
 });
 
 // Update when user changes settings
@@ -70,6 +82,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
   shareScreenshots = next?.shareScreenshots === true;
   allowBackendEscalation = next?.allowBackendEscalation !== false;
+  autoScan = next?.autoScan !== false;
+  showWarningOverlay = next?.showWarningOverlay !== false;
 });
 
 const EXTENSION_API_KEY = "phishguard-dev-key"; // Should match .env
@@ -127,7 +141,11 @@ const WHITELIST = new Set([
   "zoom.us", "spotify.com", "open.spotify.com",
   "adobe.com", "dropbox.com", "slack.com", "paypal.com", "www.paypal.com",
   "ebay.com", "www.ebay.com", "cnn.com", "bbc.com", "bbc.co.uk",
-  "microsoftonline.com"
+  "microsoftonline.com",
+  // University portals — long subdomain chains + /login paths that the
+  // lexical model scores >0.7 despite being legitimate (VIT VTop scores
+  // 0.7956 raw). Same trust call as wikipedia.org above.
+  "vit.ac.in",
 ]);
 
 // ── NEW: Brand domains for spoofing detection ─────────────────────────────
@@ -656,6 +674,20 @@ async function analyzeUrl(tabId, url) {
   storeResult(tabId, result);
   updateBadge(tabId, result.verdict);
 
+  // In-page warning banner (Stage 4 follow-up): the content script
+  // listens for VERDICT_UPDATE and renders a dismissible banner on
+  // phishing verdicts when the user has the overlay enabled.
+  if (showWarningOverlay && result.verdict === "phishing") {
+    try {
+      chrome.tabs.sendMessage(tabId, {
+        type: "VERDICT_UPDATE",
+        verdict: result.verdict,
+        score: result.score,
+        reasons: result.reasons,
+      }).catch(() => {/* content script not injected — fine */});
+    } catch (e) {}
+  }
+
   if (result.verdict === "phishing") {
     try {
       chrome.notifications.create(`phish-${tabId}-${Date.now()}`, {
@@ -723,6 +755,9 @@ chrome.webNavigation.onCompleted.addListener(
   (details) => {
     // Only analyze main frame navigations
     if (details.frameId === 0) {
+      // autoScan OFF → the user asked for manual-scan-only mode; the
+      // popup's Re-analyze button still works via the REANALYZE handler.
+      if (!autoScan) return;
       analyzeUrl(details.tabId, details.url);
     }
   },
@@ -738,7 +773,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
       const cached = tabResults.get(activeInfo.tabId);
       if (cached && cached.url === tab.url) {
         updateBadge(activeInfo.tabId, cached.verdict, cached.score);
-      } else {
+      } else if (autoScan) {
         analyzeUrl(activeInfo.tabId, tab.url);
       }
     }

@@ -1,0 +1,206 @@
+{
+  "parity": {
+    "onnx_model": "phishing_model_v4.onnx",
+    "max_prob_diff": 2.5266628000952807e-07,
+    "decision_agreement": 1.0
+  },
+  "shap_space": "probability",
+  "subsample_rows": 4032,
+  "top_features": [
+    {
+      "feature": "f01_urlLength",
+      "mean_abs_shap": 0.061022539442831224,
+      "mean_signed_shap": 0.03108835530822529
+    },
+    {
+      "feature": "f27_keywordHits",
+      "mean_abs_shap": 0.06008936387700707,
+      "mean_signed_shap": 0.03617211920005505
+    },
+    {
+      "feature": "f24_hasSuspiciousTld",
+      "mean_abs_shap": 0.0486106323912921,
+      "mean_signed_shap": 0.017618572467332408
+    },
+    {
+      "feature": "f30_longestSubdomainLen",
+      "mean_abs_shap": 0.04837464406007198,
+      "mean_signed_shap": 0.015631343225737428
+    },
+    {
+      "feature": "f18_entropyUrl",
+      "mean_abs_shap": 0.04441046233877739,
+      "mean_signed_shap": 0.01873378609619644
+    },
+    {
+      "feature": "f02_hostnameLength",
+      "mean_abs_shap": 0.042099501562101856,
+      "mean_signed_shap": 0.008140722767292203
+    },
+    {
+      "feature": "f03_pathLength",
+      "mean_abs_shap": 0.03884618767046168,
+      "mean_signed_shap": 0.013839311018938075
+    },
+    {
+      "feature": "f07_hyphenCountUrl",
+      "mean_abs_shap": 0.0350559593683739,
+      "mean_signed_shap": 0.0050710674349249895
+    },
+    {
+      "feature": "f19_entropyHost",
+      "mean_abs_shap": 0.032772567927553564,
+      "mean_signed_shap": 0.004393185289723071
+    },
+    {
+      "feature": "f04_queryLength",
+      "mean_abs_shap": 0.026881057701444815,
+      "mean_signed_shap": 0.002914118959970851
+    },
+    {
+      "feature": "f11_digitCountUrl",
+      "mean_abs_shap": 0.021227114002343617,
+      "mean_signed_shap": 0.007454049595477359
+    },
+    {
+      "feature": "f13_digitToLetterRatio",
+      "mean_abs_shap": 0.020324401323658554,
+      "mean_signed_shap": 0.007903413808777517
+    },
+    {
+      "feature": "f23_isHttps",
+      "mean_abs_shap": 0.020276033783099084,
+      "mean_signed_shap": 0.007010485411951163
+    },
+    {
+      "feature": "f21_specialCharCount",
+      "mean_abs_shap": 0.017329617835395255,
+      "mean_signed_shap": -0.00248357163818525
+    },
+    {
+      "feature": "f20_entropyPath",
+      "mean_abs_shap": 0.014855579387496822,
+      "mean_signed_shap": 0.009469602261807484
+    }
+  ],
+  "golden_set": [
+    {
+      "url": "https://www.google.com/",
+      "desc": "Google",
+      "expected": "SAFE",
+      "calibrated_prob": 0.011,
+      "pred_at_035": "SAFE",
+      "pass": true
+    },
+    {
+      "url": "https://fast.com/",
+      "desc": "Fast.com (Netflix)",
+      "expected": "SAFE",
+      "calibrated_prob": 0.0112,
+      "pred_at_035": "SAFE",
+      "pass": true
+    },
+    {
+      "url": "https://vtop.vit.ac.in/vtop/login",
+      "desc": "VIT VTop",
+      "expected": "SAFE",
+      "calibrated_prob": 0.7956,
+      "pred_at_035": "PHISHING",
+      "pass": false
+    },
+    {
+      "url": "https://github.com/login",
+      "desc": "GitHub Login",
+      "expected": "SAFE",
+      "calibrated_prob": 0.0154,
+      "pred_at_035": "SAFE",
+      "pass": true
+    },
+    {
+      "url": "https://accounts.google.com/signin",
+      "desc": "Google Sign-in",
+      "expected": "SAFE",
+      "calibrated_prob": 0.9597,
+      "pred_at_035": "PHISHING",
+      "pass": false
+    },
+    {
+      "url": "https://www.amazon.com/",
+      "desc": "Amazon",
+      "expected": "SAFE",
+      "calibrated_prob": 0.0111,
+      "pred_at_035": "SAFE",
+      "pass": true
+    },
+    {
+      "url": "https://stackoverflow.com/questions",
+      "desc": "Stack Overflow",
+      "expected": "SAFE",
+      "calibrated_prob": 0.2329,
+      "pred_at_035": "SAFE",
+      "pass": true
+    },
+    {
+      "url": "https://login.microsoftonline.com/common/oauth2",
+      "desc": "Microsoft Login",
+      "expected": "SAFE",
+      "calibrated_prob": 0.9887,
+      "pred_at_035": "PHISHING",
+      "pass": false
+    },
+    {
+      "url": "http://g00gle-login.tk/verify",
+      "desc": "Typosquatting Google",
+      "expected": "PHISHING",
+      "calibrated_prob": 0.9791,
+      "pred_at_035": "PHISHING",
+      "pass": true
+    },
+    {
+      "url": "http://45.67.89.123/login.php",
+      "desc": "IP-based phishing",
+      "expected": "PHISHING",
+      "calibrated_prob": 0.9205,
+      "pred_at_035": "PHISHING",
+      "pass": true
+    },
+    {
+      "url": "https://paypal-verify.secure-login.xyz/account",
+      "desc": "Subdomain abuse",
+      "expected": "PHISHING",
+      "calibrated_prob": 0.995,
+      "pred_at_035": "PHISHING",
+      "pass": true
+    },
+    {
+      "url": "https://secure-bank.com@evil.xyz/login",
+      "desc": "@ trick",
+      "expected": "PHISHING",
+      "calibrated_prob": 0.994,
+      "pred_at_035": "PHISHING",
+      "pass": true
+    },
+    {
+      "url": "https://amaz0n-secure.buzz/verify",
+      "desc": "Brand impersonation",
+      "expected": "PHISHING",
+      "calibrated_prob": 0.995,
+      "pred_at_035": "PHISHING",
+      "pass": true
+    },
+    {
+      "url": "http://192.0.2.1:8080/signin",
+      "desc": "Public IP phishing",
+      "expected": "PHISHING",
+      "calibrated_prob": 0.4756,
+      "pred_at_035": "PHISHING",
+      "pass": true
+    }
+  ],
+  "golden_set_failures": 3,
+  "waterfall_plots": [
+    "04_waterfall_google_sign-in.png",
+    "04_waterfall_microsoft_login.png",
+    "04_waterfall_vit_vtop.png"
+  ]
+}

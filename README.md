@@ -175,11 +175,21 @@ Honest accounting. "Designed" means the code exists but is not load-bearing;
 ### Built and working
 - 30-feature lexical extraction in both JS and Python
 - On-device ONNX inference with vendored, checksum-pinned runtime
-- Two-tier escalation with enforced verdict monotonicity
+- Two-tier escalation with enforced verdict monotonicity (both tiers —
+  the service worker's max-merge and the backend's client-score floor)
 - Threat-feed lookup, WHOIS with a real 5s timeout and visible degradation
+- Certificate-age, DNS/ASN, and redirect-chain signals, each with its own
+  timeout budget, a domain cache for stable lookups, and a hardened
+  redirect walk (loop detection, cookie stripping, bodies never read)
+- Evidence trail: every signal that moved the score, as a uniform
+  `{signal, value, weight, human_readable, status}` record, rendered in
+  the popup with degraded checks shown, never hidden
+- Domain-disjoint ML splits and grouped CV (no train/test domain leakage),
+  plus an evaluation gate on FPR at the shipped threshold that runs in CI
+  and blocks deployment on regression
 - Backend request-size caps and correlation-ID error handling
 - Screenshot sharing as explicit, revocable, default-off consent
-- 34 passing tests
+- 67 passing tests
 
 ### Designed, not load-bearing
 - **Visual brand analysis.** pHash + colour + OCR scoring works, but against a
@@ -188,29 +198,17 @@ Honest accounting. "Designed" means the code exists but is not load-bearing;
 - **`declarativeNetRequest` blocking.** Wired up, driven by feed rules only.
 
 ### Planned, not present
-- Redirect-chain following, CT-log certificate age, DNS/ASN reputation — the
-  three signals that would catch what lexical features cannot
 - Derived visual features (pHash + layout vector) to replace raw screenshot
   upload entirely
-- An evaluation gate on **FPR at fixed recall**, run in CI, blocking merges.
-  This does not exist, which is why the metrics above have caveats instead of
-  a regression guard.
+- A 500-brand reference corpus (comparison reference only — never an allowlist)
 - Any agentic orchestration layer. The design calls for one; today the backend
   is plain async functions, which is the right starting point.
 
 ### Known gaps
-- **The JS/Python feature parity test does not actually run.** All 15 cases
-  report as skipped even with Node installed — the harness slices
-  `extractLexicalFeatures` out of `service-worker.js` by brace matching and the
-  result fails to execute, which the test swallows as a skip. So the claim that
-  the two extractors agree is currently unverified. This matters more than it
-  looks: a drift between them means the model scores different features than it
-  was trained on.
 - `autoScan` and `showWarningOverlay` are saved by the options page and read by
   nothing.
 - `ml-training/` and `ml-retrain/` have diverged and neither is marked
   canonical in code.
-- CI does not run `backend/tests/`.
 
 ---
 

@@ -34,7 +34,8 @@
     "f29_doubleSlashCount",
     "f30_longestSubdomainLen"
   ],
-  "optimal_threshold": 0.7980721946781608,
+  "shipped_threshold": 0.35,
+  "shipped_fpr": 0.03798040693293142,
   "output_classes": [
     "legitimate",
     "phishing"

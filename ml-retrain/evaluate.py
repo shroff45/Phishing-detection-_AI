@@ -22,18 +22,20 @@ from sklearn.metrics import (
 from config import (
     PREPARED_DIR, MODELS_DIR, REPORTS_DIR,
     NUM_FEATURES, FEATURE_NAMES,
+    SHIPPED_SUSPICIOUS_THRESHOLD, SHIPPED_PHISHING_THRESHOLD,
 )
 from feature_extractor import extract_features_array, parse_onnx_probabilities
 
-# ── Shipped operating-point thresholds ────────────────────────────────────
-# service-worker.js line 585: suspicious >= 0.35; escalation floor is lower.
-# We evaluate at the boundary users actually see, not the model's
-# internal optimal_threshold (0.798 in the training report).
-SHIPPED_SUSPICIOUS_THRESHOLD = 0.35  # above this → flagged for backend
-SHIPPED_PHISHING_THRESHOLD   = 0.65  # above this → hard block
-
 # FPR ceiling: if we exceed this relative to baseline the gate blocks deploy.
 FPR_REGRESSION_TOLERANCE = 0.001  # allow ≤ 0.1 pp degradation
+
+# ── Shipped whitelist (extracted from service-worker.js — do not hand-edit) ─
+# The golden set must measure the operating point users actually get:
+# model + shipped whitelist, not the model in isolation. The extension
+# whitelists these domains before inference ever runs, so scoring them
+# raw-model-only measures a system nobody ships.
+# Regenerate with: python scripts/extract_whitelist.py
+from shipped_whitelist import is_whitelisted
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -76,6 +78,12 @@ def evaluate() -> None:
     y_test = np.load(PREPARED_DIR / "y_test.npy")
     src_test = np.load(PREPARED_DIR / "src_test.npy", allow_pickle=True)
 
+    # The split basis identifies which prepared/ generation the test set
+    # came from — FPR is only comparable run-to-run within the same basis.
+    with open(PREPARED_DIR / "metadata.json") as f:
+        prepared_meta = json.load(f)
+    split_basis = str(prepared_meta.get("split_strategy", "unknown"))
+
     # Load model
     model_path = MODELS_DIR / "phishing_model_v4.onnx"
     if not model_path.exists():
@@ -89,13 +97,22 @@ def evaluate() -> None:
     print(f"Input: {session.get_inputs()[0].name} {session.get_inputs()[0].shape}")
 
     # ── Load incumbent baseline (may not exist on first run) ──────────────
+    # The FPR comparison is only valid when both runs evaluated on the
+    # same split basis. When prepare_data.py changes the split strategy
+    # (e.g. Fix 19's domain-disjoint splits), the test set itself changes
+    # and the incumbent's FPR is not comparable — comparing across bases
+    # would false-block an honest model or false-pass a regression.
     incumbent_report_path = REPORTS_DIR / "evaluation_report.json"
     incumbent_fpr: float | None = None
     if incumbent_report_path.exists():
         with open(incumbent_report_path) as f:
             incumbent = json.load(f)
+        incumbent_basis = incumbent.get("split_basis")
+        if incumbent_basis != split_basis:
+            print(f"  Incumbent split basis differs ({incumbent_basis!r} vs "
+                  f"{split_basis!r}) — FPR baseline reset; not comparable.")
         # Only compare if the previous run passed its own gate
-        if incumbent.get("pass", False):
+        elif incumbent.get("pass", False):
             incumbent_fpr = incumbent.get("shipped_fpr")
 
     # ── Evaluate at SHIPPED operating point ───────────────────────────────
@@ -155,7 +172,7 @@ def evaluate() -> None:
 
     known_url_pass = True
 
-    print("\n  Known SAFE URLs:")
+    print("\n  Known SAFE URLs  (shipped operating point: model + whitelist):")
     for url, desc in KNOWN_SAFE:
         features = extract_features_array(url)
         if features is None:
@@ -164,10 +181,17 @@ def evaluate() -> None:
             continue
         X = np.array([features], dtype=np.float32)
         prob = float(parse_onnx_probabilities(session, X)[0])
-        pred = "PHISHING" if prob >= shipped_threshold else "SAFE"
-        icon = "✓" if pred == "SAFE" else "✗"
+        # The extension whitelists before inference — the operating point
+        # users get is model + whitelist. A whitelisted URL with a high
+        # raw score still passes but is worth watching: the whitelist is
+        # doing work the model should do.
+        if is_whitelisted(url):
+            pred = "SAFE (whitelisted)"
+        else:
+            pred = "SAFE" if prob < shipped_threshold else "PHISHING"
+        icon = "✓" if pred.startswith("SAFE") else "✗"
         print(f"    {icon} {desc:<30} → {pred} ({prob:.4f})")
-        if pred != "SAFE":
+        if not pred.startswith("SAFE"):
             known_url_pass = False
 
     print("\n  Known PHISHING URLs:")
@@ -241,6 +265,7 @@ def evaluate() -> None:
         "known_url_pass":    known_url_pass,
         "pass":              gate_pass,
         "gate_reasons":      gate_reasons,
+        "split_basis":       split_basis,
     }
     with open(REPORTS_DIR / "evaluation_report.json", "w") as f:
         json.dump(eval_report, f, indent=2)

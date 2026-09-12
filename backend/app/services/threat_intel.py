@@ -244,14 +244,26 @@ async def _check_google_safe_browsing(client: httpx.AsyncClient, url: str) -> di
     return {"flagged": False}
 
 
-async def check_threat_feeds(url: str) -> dict:
+async def check_threat_feeds(url: str, client_score: float = 0.0) -> dict:
     """
     Check a URL against URLHaus, VirusTotal, and Google Safe Browsing
     **in parallel**. Returns detailed feed status.
+
+    client_score: the raw calibrated model score for this URL, as supplied
+    by the caller (the backend runs no model itself). For whitelisted
+    domains it is recorded in the response as raw_model_score so the
+    agentic monitoring layer can detect anomalies — a whitelisted domain
+    suddenly scoring ~1.0 is a takeover / DNS-poisoning signal. The
+    whitelist still wins the blocking decision; this only records data.
+    A missing score stays 0.0, which can never raise a false alarm
+    (fail-safe direction).
     """
     parsed = urlparse(url)
     hostname = (parsed.netloc or "").lower()
-    
+
+    # Clamp to [0, 1] so a malformed client score can't fabricate an anomaly.
+    raw_model_score = round(max(0.0, min(1.0, float(client_score))), 4)
+
     # 1. Quick Whitelist Check
     for safe in GLOBAL_WHITELIST:
         if hostname == safe or hostname.endswith("." + safe):
@@ -261,7 +273,9 @@ async def check_threat_feeds(url: str) -> dict:
                 "threat_type": "safe",
                 "feeds_checked": ["whitelist"],
                 "feeds_flagged": [],
-                "confidence": 1.0
+                "confidence": 1.0,
+                "whitelist_match": True,
+                "raw_model_score": raw_model_score
             }
 
     result = {
@@ -270,7 +284,9 @@ async def check_threat_feeds(url: str) -> dict:
         "threat_type":     None,
         "feeds_checked":   [],
         "feeds_flagged":   [],
-        "confidence":      0.5
+        "confidence":      0.5,
+        "whitelist_match": False,
+        "raw_model_score": raw_model_score
     }
 
     async with httpx.AsyncClient(timeout=7.0) as client:
@@ -635,6 +651,16 @@ async def compute_meta_score(
                 "threat_feeds", feed_src, ti_score,
                 f"Listed on threat feed: {feed_src}",
                 feeds_checked=feeds_checked))
+        elif threat_feed_result.get("whitelist_match"):
+            # Whitelisted domain: the whitelist still wins (is_known_threat
+            # stays False), but the raw model score is recorded for anomaly
+            # monitoring. Weight 0.0 — the record reports, it never moves
+            # the score.
+            raw = threat_feed_result.get("raw_model_score") or 0.0
+            trail.insert(0, _record(
+                "whitelist", raw, 0.0,
+                f"Domain is on the shipped whitelist — raw model score "
+                f"{raw:.2f} recorded for anomaly monitoring"))
         elif feeds_checked:
             trail.insert(0, _record(
                 "threat_feeds", feed_src, 0.0,

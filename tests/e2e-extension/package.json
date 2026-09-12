@@ -1,0 +1,12 @@
+{
+  "name": "phishguard-e2e-extension",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright E2E suite for the PhishGuard MV3 extension: SW boot, URL interception, DNR blocking, popup rendering, content signals.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

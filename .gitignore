@@ -160,6 +160,8 @@ ml-retrain/*.pkl
 backend/test_data/
 extension/node_modules/
 extension/dist/
+tests/e2e-extension/node_modules/
+tests/e2e-extension/test-results/
 
 # System
 .DS_Store
