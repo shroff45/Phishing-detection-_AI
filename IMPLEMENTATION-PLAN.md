@@ -2,6 +2,15 @@
 
 **Companion docs:** [PRD.md](PRD.md) · [TRD.md](TRD.md) · [ROADMAP.md](ROADMAP.md)
 
+> **Status 2026-09-12 — Stages 1–4 COMPLETE on `stage-4-evidence-trail`.**
+> Parity harness fixed (74 tests passing, zero skips), eval gate built and
+> green in CI, three attacker-blind signals shipped with per-tool timeouts
+> and the uniform evidence-trail record, popup renders the trail with
+> degraded checks visible, ML pipeline retrained on domain-disjoint splits
+> (FPR 3.8% / FNR 3.3% at the shipped 0.35 — the old 1.7% was
+> leakage-inflated), `autoScan`/`showWarningOverlay` wired, `retrain.yml`
+> fixed. **Next: Stage 5 (retire screenshots via derived features).**
+
 Sequenced work items. Each has a definition of done that is checkable by running
 something, not by reading it.
 
