@@ -639,6 +639,8 @@ async function analyzeUrl(tabId, url) {
           reasons: allReasons,
           visual: br.visual_analysis || null,
           signals: br.signals || [],
+          evidence_trail: br.evidence_trail || [],
+          stage3_signals: br.stage3_signals || null,
         };
 
         // Log if backend tried to downgrade (for debugging)

@@ -17,7 +17,7 @@ import anyio.to_thread
 import httpx
 import structlog
 from app.config import settings
-from app.services.signals import gather_signals
+from app.services.signals import gather_signals, _record
 
 try:
     import whois as python_whois
@@ -424,6 +424,12 @@ def _whois_domain_age(domain: str) -> tuple:
     if not creation_date:
         return WHOIS_UNKNOWN_SCORE, "Domain age unavailable (WHOIS returned no creation date)"
 
+    # Some registries return tz-aware datetimes; the subtraction below
+    # would raise on a naive/aware mix and turn every lookup for those
+    # TLDs into "unavailable".
+    if getattr(creation_date, "tzinfo", None) is not None:
+        creation_date = creation_date.replace(tzinfo=None)
+
     age_days = (datetime.now() - creation_date).days
     if age_days < 30:
         return 0.7, f"Domain is very new ({age_days} days old)"
@@ -564,6 +570,11 @@ async def compute_meta_score(
         final_score = max(final_score, 0.50)
     if ti_score >= 0.70:
         final_score = max(final_score, 0.70)
+    # The client tier's floor: a strong local verdict cannot be diluted to
+    # "safe" by a backend that found nothing. The service worker enforces
+    # monotonicity on its side; this is the backend's half of the same rule.
+    if client_score >= 0.65:
+        final_score = max(final_score, 0.40)
 
     # ── Verdict ───────────────────────────────────────────────────────────
     if final_score >= 0.65:
@@ -599,6 +610,43 @@ async def compute_meta_score(
     if not reasons:
         reasons = ["No significant phishing indicators detected"]
 
+    # ── Evidence trail (Stage 4) ───────────────────────────────────────────
+    # Every signal that moved the score, as a uniform record the popup can
+    # render without interpreting raw numbers. Degraded checks (status !=
+    # "ok") carry weight 0 and are shown, never hidden — "fail visible".
+    trail: list[dict] = list(stage3.get("trail", []))
+
+    # WHOIS domain-age record
+    if whois_reason and "unavailable" in whois_reason.lower():
+        trail.insert(0, _record("domain_age", None, 0.0, whois_reason, "unavailable"))
+    elif whois_score > 0:
+        trail.insert(0, _record("domain_age", whois_score, whois_score, whois_reason))
+    else:
+        trail.insert(0, _record("domain_age", whois_score, whois_score,
+                               whois_reason or "Domain age is established (over a year old)"))
+
+    # Threat-intel record
+    if threat_feed_result:
+        flagged = bool(threat_feed_result.get("is_known_threat"))
+        feed_src = threat_feed_result.get("source") or "none"
+        feeds_checked = threat_feed_result.get("feeds_checked", [])
+        if flagged:
+            trail.insert(0, _record(
+                "threat_feeds", feed_src, ti_score,
+                f"Listed on threat feed: {feed_src}",
+                feeds_checked=feeds_checked))
+        elif feeds_checked:
+            trail.insert(0, _record(
+                "threat_feeds", feed_src, 0.0,
+                f"Checked {len(feeds_checked)} threat feeds — not listed",
+                feeds_checked=feeds_checked))
+
+    # Client ML record — the on-device score we were handed
+    if client_score > 0:
+        trail.insert(0, _record(
+            "client_ml", round(client_score, 2), round(client_score * 0.15, 2),
+            f"On-device ML model scored this URL {int(round(client_score * 100))}% phishing-like"))
+
     return {
         "score":         round(final_score, 4),
         "verdict":       verdict,
@@ -614,11 +662,17 @@ async def compute_meta_score(
             f"client_ml_score={round(client_score, 2)}",
             f"visual_score={round(visual_score, 2)}",
         ],
+        "evidence_trail": trail,
         "stage3_signals": {
-            "cert_age_h":    stage3["cert"].get("cert_age_h"),
-            "asn":           stage3["dns_asn"].get("asn"),
-            "redirect_hops": len(stage3["redirect"].get("chain", [])) - 1,
-            "final_url":     stage3["redirect"].get("final_url"),
-            "cross_origin":  stage3["redirect"].get("cross_origin", False),
+            "cert_age_h":    next((r.get("value") for r in stage3["trail"]
+                                  if r.get("signal") == "cert_age"), None),
+            "asn":           next((r.get("value") for r in stage3["trail"]
+                                  if r.get("signal") == "dns_asn"), None),
+            "redirect_hops": next((r.get("value") for r in stage3["trail"]
+                                  if r.get("signal") == "redirect_chain"), None),
+            "final_url":     next((r.get("final_url") for r in stage3["trail"]
+                                  if r.get("signal") == "redirect_chain"), None),
+            "cross_origin":  next((r.get("cross_origin") for r in stage3["trail"]
+                                  if r.get("signal") == "redirect_chain"), False),
         },
     }

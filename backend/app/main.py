@@ -5,7 +5,7 @@ PhishGuard Backend — FastAPI Application
 import base64
 import binascii
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -79,7 +79,7 @@ class FullAnalysisRequest(BaseModel):
 async def health_check():
     return {
         "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "services": {
             "visual_analyzer": True,
             "threat_intel": True,
@@ -109,6 +109,7 @@ async def analyze_quick(request: QuickCheckRequest):
             "feeds_checked": meta.get("feeds_checked", []),
             "feeds_flagged": meta.get("feeds_flagged", []),
             "signals": meta.get("signals", []),
+            "evidence_trail": meta.get("evidence_trail", []),
             "threat_feed": threat_result
         }
     except Exception as e:
@@ -149,6 +150,7 @@ async def analyze_full(request: FullAnalysisRequest):
             "feeds_checked": meta.get("feeds_checked", []),
             "feeds_flagged": meta.get("feeds_flagged", []),
             "signals": meta.get("signals", []),
+            "evidence_trail": meta.get("evidence_trail", []),
             "threat_feed": threat_result,
             "visual_analysis": visual_result
         }

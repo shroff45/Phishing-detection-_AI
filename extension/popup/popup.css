@@ -377,6 +377,107 @@ body {
   line-height: 1.45;
 }
 
+/* ── Evidence Trail (Stage 4) ── */
+.trail-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 20px;
+}
+
+.trail-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface-container);
+  border-radius: var(--radius-md);
+  transition: background var(--transition-smooth);
+  cursor: default;
+}
+
+.trail-item:hover {
+  background: var(--surface-container-high);
+}
+
+.trail-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+  background: var(--surface-container-high);
+}
+
+.trail-item.pass .trail-icon {
+  background: rgba(120, 220, 119, 0.1);
+}
+
+.trail-item.warn .trail-icon {
+  background: rgba(255, 183, 77, 0.1);
+}
+
+.trail-item.fail .trail-icon {
+  background: rgba(255, 180, 171, 0.1);
+}
+
+.trail-item.degraded .trail-icon {
+  background: rgba(189, 194, 255, 0.1);
+}
+
+.trail-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.trail-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--on-surface);
+  line-height: 1.3;
+}
+
+.trail-desc {
+  font-size: 11px;
+  color: var(--on-surface-variant);
+  line-height: 1.45;
+}
+
+.trail-badge {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.trail-badge.pass { display: none; }
+
+.trail-badge.warn {
+  background: rgba(255, 183, 77, 0.12);
+  color: var(--warning);
+}
+
+.trail-badge.fail {
+  background: rgba(255, 180, 171, 0.12);
+  color: var(--error);
+}
+
+.trail-badge.degraded {
+  background: rgba(189, 194, 255, 0.12);
+  color: var(--secondary);
+}
+
 /* ── Intel Pipeline Chip ── */
 .intel-chip {
   display: inline-flex;

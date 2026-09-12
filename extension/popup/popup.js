@@ -16,6 +16,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const urlDisplay  = document.getElementById("urlDisplay");
   const auditSection = document.getElementById("auditSection");
   const auditList   = document.getElementById("auditList");
+  const trailSection = document.getElementById("trailSection");
+  const trailList   = document.getElementById("trailList");
   const sourceLabel = document.getElementById("sourceLabel");
   const intelDot    = document.getElementById("intelDot");
   const intelValue  = document.getElementById("intelValue");
@@ -216,6 +218,94 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     } else {
       auditSection.classList.add("hidden");
+    }
+
+    renderTrail(result?.evidence_trail);
+  }
+
+  // ─── EVIDENCE TRAIL (Stage 4) ───
+  // Each backend signal becomes one row the user can read without
+  // interpreting a raw score. A degraded check (status !== "ok") is
+  // shown as degraded — never hidden — because "unknown" must not read
+  // as "safe".
+
+  const TRAIL_SOURCE_NAMES = {
+    client_ml:        "On-device ML",
+    threat_feeds:      "Threat Feeds",
+    domain_age:       "Domain Age (WHOIS)",
+    cert_age:         "Certificate Age (CT Logs)",
+    dns_asn:          "DNS & Hosting",
+    redirect_chain:   "Redirect Chain",
+  };
+
+  const TRAIL_ICONS = {
+    client_ml:        "🧠",
+    threat_feeds:      "📡",
+    domain_age:       "🗓️",
+    cert_age:         "🔒",
+    dns_asn:          "🌐",
+    redirect_chain:   "↪️",
+  };
+
+  function renderTrail(trail) {
+    if (!Array.isArray(trail) || trail.length === 0) {
+      trailSection.classList.add("hidden");
+      return;
+    }
+
+    trailSection.classList.remove("hidden");
+    trailList.innerHTML = "";
+
+    for (const rec of trail) {
+      if (!rec || typeof rec !== "object") continue;
+
+      const li = document.createElement("li");
+      const status = rec.status || "ok";
+
+      // Row severity: a weighted contribution is the row's own risk,
+      // independent of the page verdict.
+      const weight = Number(rec.weight) || 0;
+      li.className = `trail-item ${status !== "ok" ? "degraded" : weight >= 0.35 ? "fail" : weight > 0 ? "warn" : "pass"}`;
+
+      const iconDiv = document.createElement("div");
+      iconDiv.className = "trail-icon";
+      iconDiv.textContent = TRAIL_ICONS[rec.signal] || "🔍";
+
+      const bodyDiv = document.createElement("div");
+      bodyDiv.className = "trail-body";
+
+      const titleEl = document.createElement("div");
+      titleEl.className = "trail-title";
+      titleEl.textContent = TRAIL_SOURCE_NAMES[rec.signal] || rec.signal;
+
+      const descEl = document.createElement("div");
+      descEl.className = "trail-desc";
+      descEl.textContent = rec.human_readable || "No detail available";
+
+      bodyDiv.appendChild(titleEl);
+      bodyDiv.appendChild(descEl);
+
+      // Degraded badge — the fail-visible contract, in the UI
+      if (status !== "ok") {
+        const badge = document.createElement("span");
+        badge.className = "trail-badge degraded";
+        badge.textContent = status === "timeout" ? "Timed out" : "Unavailable";
+        bodyDiv.appendChild(badge);
+      } else if (weight >= 0.35) {
+        const badge = document.createElement("span");
+        badge.className = "trail-badge fail";
+        badge.textContent = "High impact";
+        bodyDiv.appendChild(badge);
+      } else if (weight > 0) {
+        const badge = document.createElement("span");
+        badge.className = "trail-badge warn";
+        badge.textContent = "Contributed";
+        bodyDiv.appendChild(badge);
+      }
+
+      li.appendChild(iconDiv);
+      li.appendChild(bodyDiv);
+      trailList.appendChild(li);
     }
   }
 
