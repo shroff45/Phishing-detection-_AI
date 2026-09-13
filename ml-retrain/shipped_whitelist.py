@@ -22,6 +22,7 @@ WHITELIST_DOMAINS = frozenset({
     "ebay.com",
     "en.wikipedia.org",
     "facebook.com",
+    "fast.com",
     "github.com",
     "google.com",
     "instagram.com",

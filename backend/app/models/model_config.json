@@ -35,7 +35,7 @@
     "f30_longestSubdomainLen"
   ],
   "shipped_threshold": 0.35,
-  "shipped_fpr": 0.03798040693293142,
+  "shipped_fpr": 0.028956943602183143,
   "output_classes": [
     "legitimate",
     "phishing"

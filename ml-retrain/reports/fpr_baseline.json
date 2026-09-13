@@ -1,0 +1,6 @@
+{
+  "shipped_fpr": 0.028956943602183143,
+  "split_basis": "domain_disjoint_group_shuffle",
+  "pass": true,
+  "note": "last gate-passing FPR; the next run's FPR gate arms its ceiling from this file"
+}

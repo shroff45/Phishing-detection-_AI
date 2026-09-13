@@ -33,7 +33,11 @@ def deploy() -> None:
         print("  Run evaluate.py before deploying.")
         sys.exit(1)
 
-    with open(eval_report_path) as f:
+    # encoding="utf-8-sig": the report has been hand-restored before
+    # (re-arming the incumbent gate), and a hand-edit can add a UTF-8
+    # BOM that plain json.load would crash on, turning a gate check
+    # into an unhandled exception.
+    with open(eval_report_path, encoding="utf-8-sig") as f:
         eval_report = json.load(f)
 
     if not eval_report.get("pass", False):
@@ -86,7 +90,7 @@ def deploy() -> None:
         print(f"  ✓ Extension: {target}")
 
         config_path = ext_model_dir / "model_config.json"
-        with open(config_path, "w") as f:
+        with open(config_path, "w", encoding="utf-8") as f:
             json.dump(model_config, f, indent=2)
         print(f"  ✓ Config:    {config_path}")
     else:
@@ -101,7 +105,7 @@ def deploy() -> None:
         print(f"  ✓ Backend:   {target}")
 
         config_path = BACKEND_MODEL_DIR / "model_config.json"
-        with open(config_path, "w") as f:
+        with open(config_path, "w", encoding="utf-8") as f:
             json.dump(model_config, f, indent=2)
         print(f"  ✓ Config:    {config_path}")
     else:
