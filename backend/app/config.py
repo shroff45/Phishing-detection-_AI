@@ -1,5 +1,7 @@
 """PhishGuard backend configuration via environment variables."""
 
+from typing import Optional
+
 from pydantic import Field
 
 try:
@@ -15,8 +17,10 @@ class Settings(BaseSettings):
     PORT: int = Field(default=7860)
     DEBUG: bool = Field(default=True)
 
-    # Redis (optional — server works fine without it)
-    REDIS_URL: str = Field(default="redis://localhost:6379/0")
+    # Redis (optional — server works fine without it). When None, rate
+    # limiting is in-memory per-process; set REDIS_URL to share rate-limit
+    # counters across instances.
+    REDIS_URL: Optional[str] = Field(default=None)
 
     # Threat intelligence API keys (optional — enhances detection)
     PHISHTANK_API_KEY: str = Field(default="")

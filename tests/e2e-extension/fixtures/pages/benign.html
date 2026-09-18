@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Local Test Page</title>
+</head>
+<body>
+  <h1>Benign local fixture</h1>
+  <p>
+    This static page exists only as a boring, ordinary navigation target for
+    the PhishGuard extension test suite. Nothing here imitates anyone; there
+    are no forms and no credential fields.
+  </p>
+  <p>
+    The host is deliberately "localhost" on an ephemeral port: not a trusted
+    whitelist domain, not an IP literal, not a suspicious hosting provider —
+    so the verdict comes from the local ML model alone and any of its three
+    outcomes is acceptable to the interception test.
+  </p>
+  <a href="#footer">Jump to footer</a>
+  <p id="footer">End of page.</p>
+</body>
+</html>

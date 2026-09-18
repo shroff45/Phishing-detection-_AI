@@ -132,7 +132,7 @@ All endpoints require the `X-API-Key` header except `/health`.
 |---|---|---|
 | `GET` | `/health` | Liveness |
 | `POST` | `/api/v1/analyze/quick` | URL-only reputation check |
-| `POST` | `/api/v1/analyze/full` | Feeds + WHOIS + optional screenshot |
+| `POST` | `/api/v1/analyze/full` | Feeds + WHOIS + derived visual features |
 | `POST` | `/api/v1/feed/update` | Refresh threat feeds |
 | `GET` | `/api/v1/feed/rules` | Fetch blocklist rules for the extension |
 
@@ -188,27 +188,30 @@ Honest accounting. "Designed" means the code exists but is not load-bearing;
   plus an evaluation gate on FPR at the shipped threshold that runs in CI
   and blocks deployment on regression
 - Backend request-size caps and correlation-ID error handling
-- Screenshot sharing as explicit, revocable, default-off consent
-- 67 passing tests
+- Derived visual features: the extension computes a 256-bit favicon aHash
+  and a colour summary in-page, and the backend compares them against brand
+  reference profiles. No image bytes exist anywhere in the pipeline; the
+  screenshot upload path (and its `shareScreenshots` opt-in, and the
+  `activeTab` permission) was removed entirely in v1.1.0
+- 102 passing tests
 
 ### Designed, not load-bearing
-- **Visual brand analysis.** pHash + colour + OCR scoring works, but against a
-  small hand-built brand set. Not the 500-brand corpus it is meant to be.
+- **Visual brand analysis.** The derived-features matcher works and is
+  load-bearing on the escalation path, but against a three-brand seed
+  corpus. Stage 6 grows it to a proper reference corpus.
 - **The API key.** Shipped in client code; it gates casual access, not attackers.
 - **`declarativeNetRequest` blocking.** Wired up, driven by feed rules only.
 
 ### Planned, not present
-- Derived visual features (pHash + layout vector) to replace raw screenshot
-  upload entirely
 - A 500-brand reference corpus (comparison reference only — never an allowlist)
+- Adversarial-example testing against our own model (Stage 7)
 - Any agentic orchestration layer. The design calls for one; today the backend
   is plain async functions, which is the right starting point.
 
 ### Known gaps
-- `autoScan` and `showWarningOverlay` are saved by the options page and read by
-  nothing.
-- `ml-training/` and `ml-retrain/` have diverged and neither is marked
-  canonical in code.
+- The E2E Playwright suite has fixtures and config committed but its spec
+  files are not in the repo; the fixtures' contracts (stub backend on port
+  7860, X-API-Key header) are what the committed code is held to.
 
 ---
 
@@ -223,9 +226,35 @@ may only raise scores.
 hand the weights to any page on the internet, not just to someone who installs
 the extension. Don't add it back.
 
+### Security Notes
+
+- The `X-API-Key` header is a **development placeholder for request tracing**,
+  not an authentication boundary. It ships in the extension's source code, so
+  anyone who installs the extension has it.
+- Backend authentication is **disabled by default** — when `EXTENSION_API_KEY`
+  is empty (the default), the `verify_api_key` dependency skips validation.
+  Set the key in `backend/.env` for deployment environments.
+- **Rate limiting** is enforced per client IP, configured by `RATE_LIMIT` in
+  `config.py` (default: `100/minute`). By default it runs as an in-memory
+  sliding window scoped to a single process — running multiple backend
+  instances (or `uvicorn --workers N`) gives each its own independent counter,
+  so the effective global limit multiplies. Set `REDIS_URL` and install the
+  pinned `redis` package to share counters across instances instead. If Redis
+  becomes unreachable after startup, limiting degrades back to per-process
+  in-memory counters rather than disabling limiting or breaking requests; that
+  degraded state is per-process, so the same multiplied-limit caveat applies
+  until Redis recovers. Either way this throttles abusive request volume but
+  does not prevent all abuse — a distributed attacker with many IPs can still
+  consume resources.
+- For production deployments with external clients, consider per-install token
+  issuance rather than a shared static key.
+- This project is a **research prototype**. Rate limiting is a layer of defence,
+  not a guarantee of safety. Do not treat it as production-ready.
+
 ## Privacy
 
 [PRIVACY.md](PRIVACY.md) is the engineering note;
 [extension/PRIVACY.md](extension/PRIVACY.md) is the user-facing policy and wins
-on any disagreement. Screenshot upload is off by default and captures are not
-redacted.
+on any disagreement. No image bytes leave the browser: escalation sends the
+URL, a numeric score, and derived visual features (favicon hash + colour
+summary) only.

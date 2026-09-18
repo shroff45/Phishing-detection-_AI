@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Account Verification Required</title>
+  <style>
+    body { font: 14px sans-serif; padding: 24px; }
+    .card { max-width: 420px; border: 1px solid #d1d5db; padding: 24px; }
+    input { display: block; width: 100%; margin: 8px 0; padding: 6px; }
+  </style>
+</head>
+<body>
+  <!-- Brand-impersonation target: >= 2 login keywords ("sign in", "password",
+       "email") in title+body, plus >= 2 paypal keywords ("paypal", "send
+       money"), on a hostname that is not paypal.com -> +0.25 boost. -->
+  <div class="card">
+    <h1>Sign in to your account</h1>
+    <p>
+      Confirm your email and password to restore your paypal session. If you
+      skip this step, pending send money transfers will be cancelled.
+    </p>
+    <form>
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="text">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password">
+      <button type="submit">Continue</button>
+    </form>
+  </div>
+</body>
+</html>

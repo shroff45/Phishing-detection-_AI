@@ -53,13 +53,6 @@ import structlog
 
 from app.services.signals import SHORTENER_DOMAINS_SET
 
-# Playwright is imported lazily-by-module: main.py imports this module
-# inside the endpoint handler, so the rest of the backend (and its
-# tests) runs on machines without browsers installed.
-from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-from playwright.async_api import async_playwright
-
 logger = structlog.get_logger(__name__)
 
 # ── Budgets (seconds) ────────────────────────────────────────────────────────
@@ -418,6 +411,14 @@ async def detonate_url(url: str) -> dict:
         "hop_cap_hit": False,
         "blocked_local": 0,   # requests the route guard refused
     }
+
+    # Doubly-lazy: main.py imports this module inside its handler, and
+    # playwright itself loads only here — so a machine without browsers
+    # still gets the SSRF entry guard above (→ 400 for refused targets)
+    # and only a genuinely-public target maps to ImportError → 503.
+    from playwright.async_api import Error as PlaywrightError
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+    from playwright.async_api import async_playwright
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(

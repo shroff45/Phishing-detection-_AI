@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Session Expired</title>
+  <style>
+    /* Fake window chrome: fixed, top 0 (<= 10), height 32px (within 20-45),
+       width 100% (> 30% of viewport) -> matches the fakeTitleBar heuristic. */
+    .fake-titlebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #1f2937;
+      color: #fff;
+      font: 13px sans-serif;
+      padding: 0 8px;
+      box-sizing: border-box;
+    }
+    /* Fake address bar: absolute-positioned DIV, width 400px (> 200),
+       text starts with "https://" -> matches the fakeUrlBar heuristic. */
+    .fake-urlbar {
+      position: absolute;
+      top: 40px;
+      left: 40px;
+      width: 400px;
+      height: 28px;
+      background: #fff;
+      border: 1px solid #9ca3af;
+      border-radius: 4px;
+      font: 13px monospace;
+      color: #111;
+      padding: 4px 8px;
+      box-sizing: border-box;
+    }
+    .page-body { margin-top: 120px; font: 14px sans-serif; padding: 0 24px; }
+  </style>
+</head>
+<body>
+  <!-- BitB score target: +2 (title bar) + 3 (URL bar) = 5 >= 4 -> hasBitB.
+       The displayed URL mentions no brand and no portal keyword, and the body
+       deliberately avoids them too, so the brand-impersonation heuristic
+       early-returns and ONLY the BitB boost reaches the service worker. -->
+  <div class="fake-titlebar">
+    <span>Secure Session</span>
+    <span class="close-button">&#10005;</span>
+  </div>
+
+  <div class="fake-urlbar">https://bank.example/session</div>
+
+  <div class="page-body">
+    <h1>Your session needs attention</h1>
+    <p>
+      This fixture emulates a Browser-in-the-Browser phishing page for the
+      PhishGuard detector suite. The window frame above is fake — only its
+      geometry matters to the test.
+    </p>
+  </div>
+</body>
+</html>

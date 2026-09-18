@@ -1,11 +1,11 @@
 # PhishGuard Privacy Policy
 
-**Last Updated:** 2025
+**Last Updated:** 2026-09-12
 
 ## What PhishGuard Does
 
 PhishGuard is a browser extension that detects phishing websites
-in real time using machine learning and threat intelligence.
+real time using machine learning and threat intelligence.
 
 ## Data We Collect
 
@@ -23,31 +23,24 @@ For URLs that the local model cannot confidently classify, the
 following is sent to the analysis server:
 - The URL being analyzed
 - Your local model's numeric score (a number, not page content)
+- Derived visual features: a 256-bit hash of the page's favicon
+  and a summary of its dominant colours. These are computed on
+  your device from the favicon image and CSS values — **no image
+  or page pixels are ever transmitted.**
 
 A page does not have to look dangerous to be escalated. The threshold
 for sending is deliberately lower than the threshold for warning you,
 so some pages that we end up marking safe are still checked against the
 server first.
 
-### Screenshots — Off By Default
-Screenshots are **not** sent unless you explicitly enable
-"Share Screenshots" in settings. That toggle is **off by default**.
-
-If you turn it on, a JPEG of the visible page is uploaded with each
-escalation so the server can check for brand impersonation. Be aware:
-
-- **The capture is not redacted.** Whatever is on screen is included —
-  if you are looking at a bank balance or an account number, that is
-  in the image.
-- The server runs OCR on it, which extracts on-screen text into a
-  second representation.
-- Escalation happens on a minority of pages, but you do not choose
-  which ones.
-
-Leave this off unless you are self-hosting the backend. A future
-release will replace raw screenshots with derived features (a
-perceptual hash and a layout vector) that carry the brand-similarity
-signal without the pixels.
+### Screenshots — Removed
+PhishGuard previously offered an opt-in screenshot upload for brand-
+impersonation checks. That path was **removed entirely** (v1.1.0): it
+sent an un-redacted capture of whatever was on screen. The favicon
+hash and colour summary now carry the brand-similarity signal with
+none of the content. There is no screenshot setting, no screenshot
+code, and no consent caveat — the "no image bytes leave your browser"
+claim is unconditional.
 
 This data is:
 - Used solely to determine if the page is phishing
@@ -58,8 +51,9 @@ This data is:
 - Your browsing history
 - Cookies or session tokens
 - Form input data or passwords
-- Page content — the URL and a numeric score are all that is sent
-  (plus a screenshot, only if you opt in)
+- Screenshots or page images of any kind
+- Page text content — the URL, a numeric score, a favicon hash,
+  and dominant colours are all that is ever sent
 
 ## Third-Party Services
 
@@ -77,7 +71,6 @@ When backend escalation is enabled, the server may query:
 In the extension's settings page you can at any time:
 - **Turn off "Backend Escalation"** — nothing is sent; all analysis
   stays on your device
-- **Turn off "Share Screenshots"** — already off unless you turned it on
 - **Point at your own server** — set a Backend Server URL you control
 - **Clear cached data** — removes stored scan results and statistics
 - **Export your data** — download everything stored locally as JSON

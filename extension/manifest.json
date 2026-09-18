@@ -5,7 +5,6 @@
   "description": "Real-time phishing detection using on-device URL analysis with backend threat-intelligence escalation",
 
   "permissions": [
-    "activeTab",
     "tabs",
     "webNavigation",
     "storage",
@@ -15,6 +14,10 @@
     "declarativeNetRequestFeedback"
   ],
 
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+
   "host_permissions": [
     "http://localhost:7860/*",
     "<all_urls>"
@@ -23,6 +26,18 @@
   "background": {
     "service_worker": "background/service-worker.js"
   },
+
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "lib/ort-wasm.wasm",
+        "lib/ort-wasm-simd.wasm",
+        "blocked.html",
+        "icons/*"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ],
 
   "action": {
     "default_popup": "popup/popup.html",

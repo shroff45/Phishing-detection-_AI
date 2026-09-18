@@ -9,7 +9,8 @@
 
 Local-first. Scoring happens on-device; data leaves the browser only on the
 escalation path described below, and only when the user has left escalation
-enabled.
+enabled. Since Stage 5, **no image bytes ever leave the browser** — the
+escalation payload is URL + score + derived visual features, unconditionally.
 
 ## Data Flow
 
@@ -45,20 +46,36 @@ Change them there and update this file in the same commit.
 |---|---|---|
 | URL | yes | Full URL, for threat-feed and WHOIS lookup |
 | Client ML score | yes | A float, not page content |
-| Screenshot (JPEG q60) | **only if opted in** | `shareScreenshots`, default **off** |
+| Visual features | when derived | 256-bit favicon aHash + ≤8 dominant RGB colours |
 
-The screenshot path is off by default because the capture is **not redacted**
-— it is whatever is on screen — and the backend runs OCR over it, producing a
-second copy of that text. It is decoded in memory, scored, and discarded; it is
-never written to disk. Planned replacement: send a perceptual hash and layout
-vector instead of pixels, which carries the brand-similarity signal without the
-image.
+The visual features are computed in the content script
+([`extension/content/content-script.js`](extension/content/content-script.js)):
+the favicon is drawn to a 16×16 canvas and hashed with a mean-threshold aHash,
+and colours are bucket-quantized from the favicon or, if unreachable, from
+page computed styles. The backend compares the hash against reference
+profiles of heavily-phished brands
+([`backend/app/services/visual_analyzer.py`](backend/app/services/visual_analyzer.py)).
+A match contributes to the score **only when the domain is not the brand's
+own** — the brand domain list can prevent false flags on the real site, it can
+never mark anything safe.
+
+### Why the screenshot path had to go
+
+The pre-Stage-5 path uploaded an un-redacted viewport JPEG when the user
+opted in, and the backend ran OCR over it, producing a second copy of any
+on-screen text. The capture could incidentally contain personal data (bank
+balances, names, account numbers), which is exactly why the GDPR note below
+carried a caveat. The derived-features path carries the same brand-similarity
+signal with none of the content: a favicon hash is not meaningfully personal
+data, and colour counts even less so.
 
 ## What Is Never Collected
 
 - Browsing history
 - Cookies or session tokens
 - Form input (passwords, emails)
+- Screenshots or page pixels — no image bytes exist anywhere in the
+  escalation path, client or server
 - Client IPs — the privacy middleware logs a truncated SHA-256 of the IP, not
   the address itself
 
@@ -66,8 +83,9 @@ image.
 
 These are the project's design intent, not the outcome of a legal review:
 
-- **GDPR / CCPA** — no personal data is intentionally processed. Note that an
-  opted-in screenshot can incidentally contain personal data, which is exactly
-  why that path is off by default.
+- **GDPR / CCPA** — no personal data is intentionally processed, and the
+  one path that could incidentally capture it (opt-in screenshots) was
+  removed in v1.1.0.
 - **Chrome Web Store User Data Policy** — the extension declares the
-  escalation path and gates the screenshot behind explicit consent.
+  escalation path; the payload is URL + score + derived scalars, and the
+  `activeTab` permission was dropped along with the capture path.

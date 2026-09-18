@@ -237,6 +237,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     cert_age:         "Certificate Age (CT Logs)",
     dns_asn:          "DNS & Hosting",
     redirect_chain:   "Redirect Chain",
+    visual_match:     "Visual Brand Check",
   };
 
   const TRAIL_ICONS = {
@@ -247,6 +248,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     cert_age:         "🔒",
     dns_asn:          "🌐",
     redirect_chain:   "↪️",
+    visual_match:     "🎨",
   };
 
   function renderTrail(trail) {

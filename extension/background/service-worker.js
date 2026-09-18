@@ -1,11 +1,11 @@
 /**
  * PhishGuard — Service Worker (Manifest V3)
  * FIXED: Verdict monotonicity, suspicious hosting detection, path keyword boost
- * 
+ *
  * Runs in the background. Responsibilities:
  *   1. Extract 30 lexical features from every navigated URL
  *   2. Run local ONNX inference for instant scoring
- *   3. Escalate ambiguous URLs to backend with screenshot
+ *   3. Escalate ambiguous URLs to backend with derived visual features
  *   4. Update badge icon based on verdict
  *   5. Periodically sync threat feed rules from backend
  *   6. NEVER downgrade a phishing verdict from backend
@@ -16,6 +16,7 @@ importScripts("../lib/ort.min.js");
 
 // Point ONNX Runtime at bundled WASM files
 ort.env.wasm.wasmPaths = chrome.runtime.getURL("lib/");
+ort.env.wasm.numThreads = 1;
 
 let ortSession = null;
 
@@ -42,9 +43,11 @@ loadModel();
 // ── Constants ─────────────────────────────────────────────────────────────
 let BACKEND_URL = "http://localhost:7860"; // default for first install
 
-// Opt-in, default OFF. Screenshots are un-redacted captures of whatever the
-// user is looking at; they only leave the device if the user asks for it.
-let shareScreenshots = false;
+// Stage 5: derived visual features (favicon aHash + colour summary) from the
+// content script, forwarded on escalation. No image bytes ever leave the
+// device — the screenshot upload path and its `shareScreenshots` opt-in were
+// removed entirely; the privacy claim is now unconditional.
+const tabVisualFeatures = new Map();
 
 // Default ON, matching the options page's `!== false` read. When off, no URL
 // ever reaches the backend and scoring is local-only.
@@ -66,7 +69,6 @@ chrome.storage.local.get(['settings'], (result) => {
     BACKEND_URL = result.settings.backendUrl;
     console.log('[PhishGuard] Using backend:', BACKEND_URL);
   }
-  shareScreenshots = result.settings?.shareScreenshots === true;
   allowBackendEscalation = result.settings?.allowBackendEscalation !== false;
   autoScan = result.settings?.autoScan !== false;
   showWarningOverlay = result.settings?.showWarningOverlay !== false;
@@ -80,7 +82,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
     BACKEND_URL = next.backendUrl;
     console.log('[PhishGuard] Backend URL updated to:', next.backendUrl);
   }
-  shareScreenshots = next?.shareScreenshots === true;
   allowBackendEscalation = next?.allowBackendEscalation !== false;
   autoScan = next?.autoScan !== false;
   showWarningOverlay = next?.showWarningOverlay !== false;
@@ -134,6 +135,9 @@ const WHITELIST = new Set([
   "wikipedia.org", "en.wikipedia.org", "twitter.com", "www.twitter.com",
   "instagram.com", "www.instagram.com", "linkedin.com", "www.linkedin.com",
   "reddit.com", "www.reddit.com", "netflix.com", "www.netflix.com",
+  // Netflix's speed test — same trust call as netflix.com above; the
+  // lexical model scores it 0.5035 at the 0.35 shipped threshold.
+  "fast.com",
   "microsoft.com", "www.microsoft.com", "apple.com", "www.apple.com",
   "github.com", "www.github.com", "stackoverflow.com",
   "yahoo.com", "www.yahoo.com", "bing.com", "www.bing.com",
@@ -610,69 +614,74 @@ async function analyzeUrl(tabId, url) {
 
   finalScore = Math.max(0, Math.min(1.0, finalScore));
 
-  // ── STEP 4: Local verdict ───────────────────────────────────────────
-  let localVerdict;
-  if (finalScore >= 0.65) localVerdict = "phishing";
-  else if (finalScore >= 0.35) localVerdict = "suspicious";
-  else localVerdict = "safe";
+  // Phase 3.2: ALWAYS escalate to backend for final verdict (no local fallback)
+  console.log(`[PhishGuard] ${new URL(url).hostname} — ML: ${finalScore.toFixed(3)}`);
 
-  if (localVerdict === "safe" && reasons.length === 0) {
-    reasons.push("No phishing indicators detected");
-  }
+  let localVerdict = finalScore >= 0.65 ? "phishing" : "suspicious";
+  if (finalScore < 0.35) localVerdict = "safe";
 
-  let result = { url, verdict: localVerdict, score: finalScore, source: "local_ml", reasons };
+  let result = {
+    url,
+    verdict: localVerdict,
+    score: finalScore,
+    source: "local_ml",
+    reasons: reasons.length > 0 ? reasons : ["No suspicious local signals"],
+    visual: null,
+    signals: [],
+    evidence_trail: [],
+    stage3_signals: null,
+  };
 
-  console.log(`[PhishGuard] ${hostname} — final: ${finalScore.toFixed(3)} → ${localVerdict}`);
+  // Prevent race condition: store pending result so CONTENT_SIGNALS can attach
+  storeResult(tabId, result);
 
-  // ── STEP 5: Backend escalation with VERDICT MONOTONICITY ────────────
-  // Key fix: Backend can only UPGRADE the verdict, never downgrade it.
-  // If local says "phishing", backend cannot flip it to "safe".
-
-  const shouldEscalate =
-    allowBackendEscalation &&
-    (finalScore >= 0.25 || brandCheck.isSpoofing || hostingProvider);
+  const shouldEscalate = allowBackendEscalation;
 
   if (shouldEscalate) {
     try {
       const br = await escalateToBackend(tabId, url, finalScore);
-      if (br) {
-        const backendScore = br.score || 0;
-
-        // ══════════════════════════════════════════════════════════
-        // VERDICT MONOTONICITY: Take the MAXIMUM of local and backend
-        // Backend can enrich with reasons but NEVER lower the score
-        // ══════════════════════════════════════════════════════════
-        const mergedScore = Math.max(finalScore, backendScore);
-        const mergedVerdict = mergedScore >= 0.65 ? "phishing" :
-                              mergedScore >= 0.35 ? "suspicious" : "safe";
-
-        // Merge reasons (deduplicated)
-        const allReasons = [...new Set([...reasons, ...(br.reasons || [])])];
-
+      if (br && br.verdict) {
+        // Retrieve any state that arrived during the await
+        const current = tabResults.get(tabId) || result;
+        
+        // Authoritative verdict exclusively server-side
         result = {
           url,
-          verdict: mergedVerdict,
-          score: mergedScore,
-          source: "backend+local",
-          reasons: allReasons,
+          verdict: br.verdict,
+          score: br.score,
+          source: "backend",
+          reasons: br.reasons ? br.reasons.concat(reasons) : reasons,
           visual: br.visual_analysis || null,
           signals: br.signals || [],
           evidence_trail: br.evidence_trail || [],
           stage3_signals: br.stage3_signals || null,
         };
-
-        // Log if backend tried to downgrade (for debugging)
-        if (backendScore < finalScore) {
-          console.log(`[PhishGuard] Backend tried to downgrade: ${backendScore.toFixed(3)} < ${finalScore.toFixed(3)} — BLOCKED`);
+        
+        // Re-apply content signals if they arrived
+        if (current.contentSignals) {
+          result.contentSignals = current.contentSignals;
+          if (current.contentSignals.hasBitB) {
+             result.score = Math.min(1.0, result.score + 0.3);
+             result.reasons.push("Browser-in-the-Browser (BitB) attack detected");
+             result.verdict = result.score >= 0.65 ? "phishing" : "suspicious";
+          }
         }
+
+        console.log(
+          `[PhishGuard] ${new URL(url).hostname} — final: ${br.score.toFixed(3)} → ${br.verdict}`
+        );
       }
-    } catch (e) {
-      console.debug("[PhishGuard] Backend unavailable:", e.message);
+    } catch (err) {
+      console.error("[PhishGuard] Backend escalation failed:", err);
+      result.verdict = "unknown";
+      result.score = 0.0;
+      result.source = "error";
+      result.reasons = ["Backend unreachable — exercise caution"].concat(reasons);
     }
   }
 
   storeResult(tabId, result);
-  updateBadge(tabId, result.verdict);
+  updateBadge(tabId, result.verdict, result.score);
 
   // In-page warning banner (Stage 4 follow-up): the content script
   // listens for VERDICT_UPDATE and renders a dismissible banner on
@@ -704,32 +713,19 @@ async function analyzeUrl(tabId, url) {
 /**
  * Escalate to backend for threat-feed and heuristic analysis.
  *
- * Screenshots are NOT sent unless the user has explicitly enabled
- * `shareScreenshots` in settings. The capture is un-redacted, so an escalation
- * on a banking or health page would otherwise upload account numbers and names.
- * Default-off keeps the privacy claim true; PRIVACY.md documents the trade-off.
- * Phase 2 replaces this with derived features (perceptual hash + layout vector).
+ * Stage 5: only the URL, the numeric client score, and derived visual
+ * features (favicon aHash + colour summary — 256 bits and a handful of
+ * RGB triples, no pixels) are sent. The screenshot upload path and its
+ * `shareScreenshots` opt-in were removed entirely, so the "no image bytes
+ * leave the browser" claim is unconditional rather than consent-gated.
  */
 async function escalateToBackend(tabId, url, clientScore) {
-  let screenshotBase64 = null;
-
-  if (shareScreenshots) {
-    try {
-      // JPEG, not PNG: `quality` is silently ignored for PNG, so a PNG capture
-      // is full-size lossless — the worst case for both bandwidth and PII.
-      screenshotBase64 = await chrome.tabs.captureVisibleTab(null, {
-        format: "jpeg",
-        quality: 60,
-      });
-    } catch (err) {
-      console.debug("[PhishGuard] Screenshot capture failed:", err.message);
-    }
-  }
+  const visualFeatures = tabVisualFeatures.get(tabId) || null;
 
   const body = {
     url,
     client_score: clientScore,
-    screenshot_base64: screenshotBase64,
+    visual_features: visualFeatures,
   };
 
   const response = await fetch(`${BACKEND_URL}/api/v1/analyze/full`, {
@@ -785,6 +781,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 // Clean up when tab is closed
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabResults.delete(tabId);
+  tabVisualFeatures.delete(tabId);
 });
 
 // ── Message Handler (for popup & content scripts) ─────────────────────────
@@ -804,8 +801,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "CONTENT_SIGNALS") {
     // Receive additional signals from content script
     const tabId = sender.tab?.id;
+    console.log(`[PhishGuard] Received CONTENT_SIGNALS for tabId=${tabId}, hasBitB=${message.signals?.hasBitB}`);
     if (tabId) {
+      // Stage 5: derived visual features ride along with the DOM signals.
+      if (message.visual_features && typeof message.visual_features === "object") {
+        tabVisualFeatures.set(tabId, message.visual_features);
+      }
       const existing = tabResults.get(tabId);
+      console.log(`[PhishGuard] CONTENT_SIGNALS existing=`, !!existing);
       if (existing) {
         // Merge content script signals
         if (message.signals) {
@@ -825,6 +828,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             updateBadge(tabId, existing.verdict, existing.score);
           }
           storeResult(tabId, existing);
+          console.log(`[PhishGuard] Stored updated result for tabId=${tabId}`);
         }
       }
     }

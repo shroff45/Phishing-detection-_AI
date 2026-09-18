@@ -14,17 +14,31 @@ pydantic-settings==2.12.0
 python-dotenv==1.2.1
 numpy==2.4.3
 structlog==25.5.0
+# Optional at runtime: enables the shared Redis rate-limit backend when
+# REDIS_URL is set. The app imports it lazily and runs fine without it.
+redis==8.1.0
 tldextract==5.3.1
 slowapi==0.1.9
 httpx==0.28.1
 python-whois==0.9.6
-Pillow==11.3.0
-scipy==1.16.2
-easyocr==1.7.2
 python-multipart==0.0.22
 anyio==4.12.1
+
+# NOTE (Stage 5): Pillow, scipy, and easyocr were removed with the screenshot
+# path — the visual analyzer now consumes derived features (favicon aHash +
+# colour summary), never image bytes. No image decoding happens server-side.
+
+# Sandbox crawler (Track B): the detonation browser. playwright is imported
+# lazily inside detonate_url — the API boots and refuses bad targets without
+# it, but a public-target detonation 503s unless this pin AND
+# `playwright install chromium` are present. Same version as the Node-side
+# E2E suite (tests/e2e-extension/package.json) so both drive chromium-1243.
+playwright==1.63.0
 
 # Test-only. Kept here rather than in a separate file because CI installs this
 # one file and immediately runs pytest.
 pytest==9.0.2
 pytest-asyncio==1.3.0
+# In-memory Redis stub so the Redis rate-limit path is tested without a live
+# server.
+fakeredis==2.38.0

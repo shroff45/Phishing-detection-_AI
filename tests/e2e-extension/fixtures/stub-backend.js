@@ -10,8 +10,9 @@
  * Serves exactly the three routes the service worker calls:
  *   POST /api/v1/analyze/full  — records every request body + headers so
  *                               specs can assert the privacy contract
- *                               (screenshot_base64 null by default) and the
- *                               auth contract (X-API-Key: phishguard-dev-key).
+ *                               (no image bytes: visual_features only, and
+ *                               only derived scalars within it) and the auth
+ *                               contract (X-API-Key: phishguard-dev-key).
  *   POST /api/v1/feed/update  — triggers feed sync.
  *   GET  /api/v1/feed/rules   — returns DNR dynamic-rule JSON in the same
  *                               shape feed_manager produces, so syncThreatFeed
@@ -46,7 +47,7 @@ const FEED_RULES = [
 function startStubBackend() {
   return new Promise((resolve, reject) => {
     const state = {
-      // Every /analyze/full request: { url, client_score, screenshot_base64, apiKey }
+      // Every /analyze/full request: { url, client_score, visual_features, apiKey }
       analyzeRequests: [],
       feedUpdateCount: 0,
       feedRulesRequests: 0,
@@ -73,7 +74,7 @@ function startStubBackend() {
           state.analyzeRequests.push({
             url: parsed.url,
             client_score: parsed.client_score,
-            screenshot_base64: parsed.screenshot_base64 ?? null,
+            visual_features: parsed.visual_features ?? null,
             apiKey: apiKey ?? null,
           });
           sendJSON(200, {

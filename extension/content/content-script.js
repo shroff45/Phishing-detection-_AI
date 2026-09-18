@@ -49,6 +49,170 @@
     brandDetected: null,
   };
 
+  // ── Stage 5: derived visual features (never pixels) ────────────────────
+  // A 256-bit aHash of the favicon (16x16 grayscale, mean threshold) plus a
+  // dominant-colour summary. These carry the brand-similarity signal that the
+  // screenshot upload used to carry, without any image bytes leaving the
+  // browser. The reference hashes in the backend corpus were computed from the
+  // official favicons composited onto white — same result as drawing to a
+  // canvas, which composites transparency onto the canvas background.
+  const visualFeatures = {
+    favicon_ahash: null,      // 256-char bit string, or null if unavailable
+    color_summary: null,     // up to 5 dominant RGB colours
+    color_source: null,      // "favicon" | "page" | "unavailable"
+  };
+
+  const FAVICON_SIZE = 16;   // hash resolution: 16*16 = 256 bits
+
+  function ahashCanvas(canvas, size) {
+    const ctx = canvas.getContext("2d");
+    const img = ctx.getImageData(0, 0, size, size).data;
+    const gray = new Array(size * size);
+    let sum = 0;
+    for (let i = 0; i < size * size; i++) {
+      // canvas returns premultiplied RGBA over the canvas background; the
+      // alpha channel is already flattened by the draw, so grayscale is
+      // 0.299R + 0.587G + 0.114B — the standard luma, matching the backend.
+      const r = img[i * 4], g = img[i * 4 + 1], b = img[i * 4 + 2];
+      const y = 0.299 * r + 0.587 * g + 0.114 * b;
+      gray[i] = y;
+      sum += y;
+    }
+    const mean = sum / (size * size);
+    let bits = "";
+    for (let i = 0; i < size * size; i++) {
+      bits += gray[i] > mean ? "1" : "0";
+    }
+    return bits;
+  }
+
+  function dominantColors(canvas, n) {
+    const ctx = canvas.getContext("2d");
+    const { width, height } = canvas;
+    const data = ctx.getImageData(0, 0, width, height).data;
+    // 3-bit-per-channel colour quantization — enough to bucket near-identical
+    // brand colours together without storing any pixel data.
+    const buckets = new Map();
+    for (let i = 0; i < data.length; i += 4) {
+      const a = data[i + 3];
+      if (a < 128) continue; // skip transparent
+      const key = ((data[i] >> 5) << 6) | ((data[i + 1] >> 5) << 3) | (data[i + 2] >> 5);
+      if (buckets.has(key)) {
+        const cur = buckets.get(key);
+        cur.count++;
+        cur.r += data[i];
+        cur.g += data[i + 1];
+        cur.b += data[i + 2];
+      } else {
+        buckets.set(key, { count: 1, r: data[i], g: data[i + 1], b: data[i + 2] });
+      }
+    }
+    return [...buckets.values()]
+      .sort((a, b) => b.count - a.count)
+      .slice(0, n)
+      .map(({ r, g, b, count }) => [
+        Math.round(r / count),
+        Math.round(g / count),
+        Math.round(b / count),
+      ]);
+  }
+
+  async function deriveVisualFeatures() {
+    // 1. Favicon aHash — fetch the favicon same-origin where possible.
+    const link = document.querySelector(
+      'link[rel~="icon"][href], link[rel="shortcut icon"][href]'
+    );
+    const faviconHref = link
+      ? link.href
+      : new URL("/favicon.ico", window.location.origin).href;
+
+    try {
+      const resp = await fetch(faviconHref, { credentials: "omit" });
+      if (!resp.ok) throw new Error(`status ${resp.status}`);
+      const blob = await resp.blob();
+      if (blob.size > 512 * 1024) throw new Error("favicon too large");
+
+      const bitmap = await createImageBitmap(blob);
+      const canvas = document.createElement("canvas");
+      canvas.width = FAVICON_SIZE;
+      canvas.height = FAVICON_SIZE;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      // Canvas background is transparent by default; fill white so alpha
+      // composites the same way the backend's reference hashes do.
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, FAVICON_SIZE, FAVICON_SIZE);
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(bitmap, 0, 0, FAVICON_SIZE, FAVICON_SIZE);
+      bitmap.close?.();
+
+      visualFeatures.favicon_ahash = ahashCanvas(canvas, FAVICON_SIZE);
+
+      // 2. Colour summary from the same favicon canvas (128x128 read)
+      const ccanvas = document.createElement("canvas");
+      ccanvas.width = 64;
+      ccanvas.height = 64;
+      const cctx = ccanvas.getContext("2d", { willReadFrequently: true });
+      cctx.fillStyle = "#fff";
+      cctx.fillRect(0, 0, 64, 64);
+      cctx.imageSmoothingEnabled = true;
+      cctx.drawImage(bitmap, 0, 0, 64, 64);
+      visualFeatures.color_summary = dominantColors(ccanvas, 5);
+      visualFeatures.color_source = "favicon";
+    } catch (err) {
+      // Favicons can be missing or cross-origin-blocked (no fetch without CORS
+      // headers). Fall back to page-level CSS colours — never fail the scan.
+      try {
+        const colors = pageDominantColors();
+        if (colors.length > 0) {
+          visualFeatures.color_summary = colors;
+          visualFeatures.color_source = "page";
+        } else {
+          visualFeatures.color_source = "unavailable";
+        }
+      } catch {
+        visualFeatures.color_source = "unavailable";
+      }
+    }
+  }
+
+  function pageDominantColors() {
+    // Dominant colours from the rendered page, via computed styles.
+    // Colour values only — no text, no pixels, no layout data.
+    const counts = new Map();
+    const els = document.querySelectorAll(
+      "body, header, nav, footer, [class]"
+    );
+    const limit = Math.min(els.length, 400);
+    for (let i = 0; i < limit; i++) {
+      const s = window.getComputedStyle(els[i]);
+      for (const prop of ["background-color", "color"]) {
+        const m = s[prop] && s[prop].match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        if (!m) continue;
+        const alpha = s[prop].match(/rgba?\([^)]*,\s*([\d.]+)\)/);
+        if (alpha && parseFloat(alpha[1]) < 0.5) continue; // skip translucent
+        const key = ((+m[1] >> 5) << 6) | ((+m[2] >> 5) << 3) | (+m[3] >> 5);
+        if (counts.has(key)) {
+          const cur = counts.get(key);
+          cur.count++;
+          cur.r += +m[1];
+          cur.g += +m[2];
+          cur.b += + +m[3];
+        } else {
+          counts.set(key, { count: 1, r: +m[1], g: +m[2], b: +m[3] });
+        }
+      }
+    }
+    return [...counts.values()]
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5)
+      .map(({ r, g, b, count }) => [
+        Math.round(r / count),
+        Math.round(g / count),
+        Math.round(b / count),
+      ]);
+  }
+
+
   // ── Brand keywords for content-level detection ────────────────────────
   const BRAND_KEYWORDS = {
     google:    ["google", "gmail", "sign in to google", "one account. all of google"],
@@ -204,20 +368,36 @@
     }
   }
 
-  function runAnalysis() {
+  async function runAnalysis() {
+    console.log("[PhishGuard-CS] runAnalysis started");
     try {
       detectBitB();
+      console.log("[PhishGuard-CS] detectBitB done. hasBitB =", signals.hasBitB);
       analyzeForms();
       detectDomCloaking();
       detectClipboardHijack();
       monitorDomMutations();
       detectBrandImpersonation();
+      console.log("[PhishGuard-CS] Synchronous analysis done");
+      deriveVisualFeatures().catch((err) => {
+        console.log("[PhishGuard-CS] deriveVisualFeatures error:", err);
+        visualFeatures.color_source = "unavailable";
+      });
       setTimeout(() => {
+        console.log("[PhishGuard-CS] Sending CONTENT_SIGNALS");
         try {
-          chrome.runtime.sendMessage({ type: "CONTENT_SIGNALS", signals: { ...signals } });
-        } catch (e) {}
+          chrome.runtime.sendMessage({
+            type: "CONTENT_SIGNALS",
+            signals: { ...signals },
+            visual_features: { ...visualFeatures },
+          });
+        } catch (e) {
+          console.log("[PhishGuard-CS] SendMessage error:", e);
+        }
       }, 1500);
-    } catch (err) {}
+    } catch (err) {
+      console.log("[PhishGuard-CS] runAnalysis threw error:", err);
+    }
   }
 
   if (document.readyState === "complete") setTimeout(runAnalysis, 300);

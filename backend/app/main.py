@@ -3,16 +3,19 @@ PhishGuard Backend — FastAPI Application
 ─────────────────────────────────────────
 """
 import asyncio
+import time
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 import structlog
 import uvicorn
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # App services
 from app.config import settings
@@ -30,6 +33,173 @@ structlog.configure(
 )
 logger = structlog.get_logger(__name__)
 
+
+def _parse_rate_limit(value: str) -> tuple:
+    """Parse '100/minute' style strings into (max_requests, window_seconds)."""
+    count_str, window_str = value.strip().lower().split("/")
+    count = int(count_str)
+    windows = {
+        "second": 1, "seconds": 1,
+        "minute": 60, "minutes": 60,
+        "hour": 3600, "hours": 3600,
+    }
+    window = windows.get(window_str, 60)
+    return count, window
+
+
+_RATE_MAX, _RATE_WINDOW = _parse_rate_limit(settings.RATE_LIMIT)
+
+
+# ── Rate limiting: pluggable storage ─────────────────────────────────────────
+# In-memory is the default and preserves the original single-process behaviour
+# exactly. Redis is opt-in via REDIS_URL for multi-instance deployments that
+# need a shared counter. Every Redis failure path degrades to the in-memory
+# store (fail-open-to-local): limiting continues per-process rather than
+# 500ing every request or disabling limiting entirely. Never crash startup
+# because Redis is unreachable.
+
+
+class InMemoryRateStore:
+    """Sliding-window store for a single process. Zero dependencies.
+
+    Bounded memory: entries older than the window are pruned on each check.
+    Uses time.monotonic() for drift-free windowing.
+    """
+
+    def __init__(self) -> None:
+        self._hits: dict[str, list[float]] = defaultdict(list)
+
+    def hit(self, key: str, max_requests: int, window: float) -> Optional[int]:
+        """Register a request for ``key``.
+
+        Returns Retry-After seconds when the request exceeds the limit,
+        or None when it is allowed.
+        """
+        now = time.monotonic()
+        timestamps = [t for t in self._hits[key] if now - t < window]
+        if len(timestamps) >= max_requests:
+            self._hits[key] = timestamps
+            return max(int(window - (now - timestamps[0])) + 1, 1)
+        timestamps.append(now)
+        self._hits[key] = timestamps
+        return None
+
+
+class RedisRateStore:
+    """Fixed-window counters in Redis, shared across processes/instances.
+
+    Uses one INCR+EXPIRE bucket per client per window. Buckets are aligned to
+    wall-clock time (time.time(), not monotonic) so every process increments
+    the same counter for the same window.
+
+    Degradation: if a Redis call fails, mark the backend down for
+    _RETRY_SECONDS and serve from the in-memory fallback. A recovered Redis
+    is picked up without a restart. Request-time Redis errors never become
+    HTTP 500s.
+    """
+
+    _RETRY_SECONDS = 30.0
+
+    def __init__(self, client, fallback: InMemoryRateStore) -> None:
+        self._client = client
+        self._fallback = fallback
+        self._redis_down_until = 0.0
+
+    def hit(self, key: str, max_requests: int, window: float) -> Optional[int]:
+        now = time.time()
+        if now < self._redis_down_until:
+            return self._fallback.hit(key, max_requests, window)
+        bucket = int(now // window)
+        rkey = f"phishguard:ratelimit:{key}:{bucket}"
+        try:
+            # INCR + EXPIRE in one pipeline; the key always gets a TTL, so
+            # memory in Redis stays bounded by the number of active clients.
+            pipe = self._client.pipeline(transaction=False)
+            pipe.incr(rkey)
+            pipe.expire(rkey, max(int(window), 1))
+            count, _ = pipe.execute()
+        except Exception as exc:  # redis.exceptions.*, OSError — any transport fault
+            logger.warning("rate_limit_redis_error_using_memory", error=str(exc))
+            self._redis_down_until = now + self._RETRY_SECONDS
+            return self._fallback.hit(key, max_requests, window)
+        if count > max_requests:
+            return max(int(window - (now % window)) + 1, 1)
+        return None
+
+
+def _build_rate_store() -> Tuple[object, str]:
+    """Select the rate-limit backend.
+
+    Redis only when REDIS_URL is set AND the redis package imports AND the
+    server answers PING. Every other outcome lands on the in-memory store —
+    a configured-but-broken Redis must never crash startup.
+    """
+    redis_url = getattr(settings, "REDIS_URL", None)
+    if not redis_url:
+        return InMemoryRateStore(), "memory"
+    try:
+        import redis  # type: ignore
+    except ImportError:
+        logger.warning(
+            "rate_limit_redis_unavailable",
+            reason="REDIS_URL set but the redis package is not installed",
+            fallback="in-memory per-process limiting",
+        )
+        return InMemoryRateStore(), "memory"
+    try:
+        client = redis.Redis.from_url(
+            redis_url, socket_connect_timeout=1.0, socket_timeout=1.0
+        )
+        client.ping()
+    except Exception as exc:
+        logger.warning(
+            "rate_limit_redis_unreachable",
+            error=str(exc),
+            fallback="in-memory per-process limiting",
+        )
+        return InMemoryRateStore(), "memory"
+    logger.info("rate_limit_backend_selected", backend="redis")
+    return RedisRateStore(client, InMemoryRateStore()), "redis"
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Rate limiter keyed by client IP: 429 + Retry-After on excess.
+
+    Storage is pluggable (in-memory default, Redis when REDIS_URL is set);
+    the 429/Retry-After response contract is identical for both backends.
+    """
+
+    def __init__(self, app, max_requests: int = _RATE_MAX, window: float = _RATE_WINDOW, store=None):
+        super().__init__(app)
+        self.max_requests = max_requests
+        self.window = window
+        if store is None:
+            self.store, self.backend = _build_rate_store()
+        else:
+            self.store, self.backend = store, type(store).__name__
+
+    @property
+    def _hits(self):
+        """Direct view of the local hit map — the in-memory store's own dict,
+        or the Redis store's degradation fallback. Test/ops introspection only.
+        """
+        store = self.store
+        if isinstance(store, RedisRateStore):
+            store = store._fallback
+        return store._hits
+
+    async def dispatch(self, request: Request, call_next):
+        client_ip = request.client.host if request.client else "unknown"
+        retry_after = self.store.hit(client_ip, self.max_requests, self.window)
+        if retry_after is not None:
+            return Response(
+                content='{"detail":"Rate limit exceeded. Try again later."}',
+                status_code=429,
+                media_type="application/json",
+                headers={"Retry-After": str(retry_after)},
+            )
+        return await call_next(request)
+
 app = FastAPI(
     title="PhishGuard API",
     description="Real-time phishing detection with visual similarity analysis",
@@ -43,6 +213,10 @@ try:
     logger.info("privacy_middleware_loaded")
 except ImportError:
     logger.debug("privacy_middleware_not_found")
+
+# Rate limiting — BEFORE CORS so it applies to all requests
+app.add_middleware(RateLimitMiddleware)
+logger.info("rate_limit_middleware_loaded", rate_limit=settings.RATE_LIMIT)
 
 # CORS — allow Chrome extension origins explicitly
 app.add_middleware(

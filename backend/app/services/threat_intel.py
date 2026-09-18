@@ -562,9 +562,13 @@ async def compute_meta_score(
     stage3_score = stage3.get("total_score", 0.0)
 
     # ── Visual similarity ─────────────────────────────────────────────────
+    # Derived-features path (Stage 5): the analyzer's similarity_score is
+    # 0.5-0.8 when the favicon hash matched a brand the domain doesn't own.
     visual_score = 0.0
     if visual_result and visual_result.get("is_impersonation"):
-        visual_score = visual_result.get("confidence", 0.7)
+        visual_score = min(
+            1.0, float(visual_result.get("similarity_score", 0.7) or 0.7)
+        )
 
     # ── Blend ─────────────────────────────────────────────────────────────
     #   primary     = max(threat_intel, heuristics)  × 0.45
@@ -672,6 +676,24 @@ async def compute_meta_score(
         trail.insert(0, _record(
             "client_ml", round(client_score, 2), round(client_score * 0.15, 2),
             f"On-device ML model scored this URL {int(round(client_score * 100))}% phishing-like"))
+
+    # Visual record (Stage 5) — derived features, never pixels. A degraded
+    # feature set (no favicon reachable) is reported as degraded, weight 0.
+    if visual_result:
+        if visual_result.get("is_impersonation"):
+            brand = visual_result.get("brand_detected") or "a known brand"
+            trail.insert(0, _record(
+                "visual_match", brand, round(visual_score * 0.05, 2),
+                f"Page favicon matches {brand} but the domain is not {brand}'s"))
+        elif visual_result.get("brand_detected"):
+            trail.insert(0, _record(
+                "visual_match", visual_result["brand_detected"], 0.0,
+                f"Favicon matches {visual_result['brand_detected']} and the domain is that brand's own"))
+        elif visual_result.get("details", {}).get("degraded"):
+            trail.insert(0, _record(
+                "visual_match", None, 0.0,
+                "Visual check unavailable (no favicon features derived)",
+                status="unavailable"))
 
     return {
         "score":         round(final_score, 4),

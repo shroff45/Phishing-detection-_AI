@@ -1,68 +1,75 @@
+"""
+Root-level twin of backend/tests/test_visual_analyzer.py.
+
+Kept because CI runs ../tests/ from backend/ and the root suite historically
+imported the analyzer with a different sys.path; it now pins the Stage-5
+derived-features contract from outside the backend package to catch
+import-path regressions.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
+
 import pytest
-from app.services.visual_analyzer import VisualAnalyzer
-from PIL import Image
-import numpy as np
-import io
+
+from app.services.visual_analyzer import (
+    BRAND_PROFILES,
+    FAVICON_MATCH_BITS,
+    HASH_BITS,
+    VisualAnalyzer,
+    _hamming,
+)
+
 
 @pytest.fixture
 def analyzer():
     return VisualAnalyzer()
 
-@pytest.fixture
-def sample_image_bytes():
-    # Create a simple red 100x100 image
-    img = Image.new('RGB', (100, 100), color=(255, 0, 0))
-    img_byte_arr = io.BytesIO()
-    img.save(img_byte_arr, format='JPEG')
-    return img_byte_arr.getvalue()
 
-def test_phash_generation(analyzer, sample_image_bytes):
-    img = Image.open(io.BytesIO(sample_image_bytes))
-    phash = analyzer.calculate_phash(img)
-    
-    assert isinstance(phash, str)
-    assert len(phash) == 64
-    assert all(c in '01' for c in phash)
+def _features_for(brand: str):
+    return {
+        "favicon_ahash": BRAND_PROFILES[brand]["ahash"],
+        "color_summary": list(BRAND_PROFILES[brand]["colors"][:2]),
+        "color_source": "favicon",
+    }
 
-def test_hamming_distance(analyzer):
-    hash1 = "11110000" * 8
-    hash2 = "00001111" * 8
-    hash3 = "11110000" * 8
-    
-    assert analyzer.hamming_distance(hash1, hash3) == 0
-    assert analyzer.hamming_distance(hash1, hash2) == 64
-    
-    # Distance between strings of different lengths should be max (64)
-    assert analyzer.hamming_distance(hash1, "10") == 64
 
-def test_color_extraction(analyzer, sample_image_bytes):
-    img = Image.open(io.BytesIO(sample_image_bytes))
-    colors = analyzer.extract_colors(img, num_colors=1)
-    
-    assert len(colors) >= 1
-    # Check if we got something close to red (255, 0, 0)
-    red_color = colors[0]
-    assert red_color[0] > 200 # High red
-    assert red_color[1] < 50  # Low green
-    assert red_color[2] < 50  # Low blue
+class TestDerivedFeatureContract:
+    """The cross-package contract the escalation path depends on."""
 
-def test_color_distance(analyzer):
-    c1 = (255, 0, 0)
-    c2 = (0, 255, 0)
-    c3 = (255, 0, 0)
-    
-    dist1 = analyzer.color_distance(c1, c2)
-    dist2 = analyzer.color_distance(c1, c3)
-    
-    assert dist2 == 0
-    assert dist1 > 300 # sqrt(255^2 + 255^2) approx 360
+    def test_legitimate_brand_page_not_impersonation(self, analyzer):
+        for brand, profile in BRAND_PROFILES.items():
+            result = analyzer.analyze_features(
+                _features_for(brand), f"https://{profile['domains'][0]}/"
+            )
+            assert result["is_impersonation"] is False, brand
 
-@pytest.mark.asyncio
-async def test_full_analysis_workflow(analyzer, sample_image_bytes):
-    url = "http://legit-site.com"
-    result = await analyzer.analyze_screenshot(sample_image_bytes, url)
-    
-    assert "similarity_score" in result
-    assert "brand_detected" in result
-    assert "is_impersonation" in result
-    assert isinstance(result["similarity_score"], float)
+    def test_brand_favicon_elsewhere_is_impersonation(self, analyzer):
+        for brand in BRAND_PROFILES:
+            result = analyzer.analyze_features(
+                _features_for(brand), "https://login-verify.example.tk/"
+            )
+            assert result["is_impersonation"] is True, brand
+
+    def test_no_pixels_accepted_anywhere(self, analyzer):
+        # The API surface takes a dict of derived scalars only; this is the
+        # regression pin for "no image bytes ever reach the analyzer".
+        import inspect
+        sig = inspect.signature(VisualAnalyzer.analyze_features)
+        assert list(sig.parameters) == ["self", "features", "url"]
+
+    def test_match_threshold_leaves_margin_for_resampling_drift(self):
+        # Canvas vs reference pipelines drift <= 3 bits; inter-brand
+        # separation is >= 66 bits. The threshold must sit comfortably
+        # between: tight enough to not confuse brands, loose enough that a
+        # legitimate icon rendered at a different size still matches.
+        assert FAVICON_MATCH_BITS >= 8
+        assert FAVICON_MATCH_BITS <= HASH_BITS // 10
+
+    def test_hamming_shape(self, analyzer):
+        a = BRAND_PROFILES["google"]["ahash"]
+        b = BRAND_PROFILES["microsoft"]["ahash"]
+        d = _hamming(a, b)
+        assert 0 < d <= HASH_BITS

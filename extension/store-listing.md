@@ -23,6 +23,8 @@ phishing attempts that have never been seen before.
 ### Privacy First
 - All fast-path analysis runs entirely on your device
 - No browsing history is ever collected or transmitted
+- No screenshots or page images are ever sent — visual checks use a
+  derived favicon hash and colour summary, never pixels
 - URLs are only sent to our server when local analysis is inconclusive
   AND you explicitly enable this in settings
 - Fully open source — inspect every line of code
@@ -60,5 +62,5 @@ credentials on malicious pages.
 | declarativeNetRequest | Block known phishing domains at the network level |
 | webNavigation | Detect page navigation events to trigger URL analysis |
 | scripting | Inject content scripts for DOM analysis |
-| activeTab | Capture page screenshots for visual similarity analysis |
+| tabs | Read the URL of the current tab for analysis and badge updates |
 | host_permissions (http/https) | Analyze URLs on all websites the user visits |

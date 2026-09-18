@@ -166,3 +166,39 @@ tests/e2e-extension/test-results/
 # System
 .DS_Store
 Thumbs.db
+
+# --- Stage-5 baseline exclusions ---
+
+# Root Node deps (Playwright/E2E harness tooling); generated per machine.
+# (extension/ and tests/e2e-extension/ node_modules are already covered above.)
+/node_modules/
+
+# Playwright run artifacts emitted at repo root.
+/test-results/
+
+# Redirected pytest console output used for local debugging; not source.
+backend/pytest_output.txt
+backend/pytest_output_utf8.txt
+backend/pytest_final_output.txt
+backend/pytest_final_output_utf8.txt
+backend/pytest_results.txt
+
+# One-off scratch / diagnostic scripts; not part of the shipped product.
+/verify_4_0.py
+/test_leakage.py
+/proxy_wrapper.py
+/setup_phase4.py
+/start_claude_nim.ps1
+/user_prompt.txt
+ml-retrain/_checkpoint_verify.py
+
+# Model binaries stay out of git (no LFS decision made).
+# Note: already-tracked files in this dir are unaffected.
+ml-retrain/models/*.onnx
+
+# E2E SPEC files intentionally stay out per README design rule
+# (fixtures/ and fixtures/pages/ ARE committed — do not exclude them).
+tests/e2e-extension/[0-9][0-9]-*.spec.js
+
+# Agent orchestration runtime state; machine-local.
+.claude-flow/
