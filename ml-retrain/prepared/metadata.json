@@ -32,38 +32,38 @@
     "f29_doubleSlashCount",
     "f30_longestSubdomainLen"
   ],
-  "train_size": 84785,
-  "val_size": 11455,
-  "cal_size": 12261,
-  "test_size": 12087,
+  "train_size": 82918,
+  "val_size": 11109,
+  "cal_size": 15111,
+  "test_size": 12174,
   "split_strategy": "domain_disjoint_group_shuffle",
   "group_key": "etld_plus_1",
   "domain_disjoint": true,
-  "num_unique_domains": 93925,
+  "num_unique_domains": 94174,
   "class_balance": {
     "train": {
-      "n": 84785,
-      "phishing": 42526,
-      "legitimate": 42259,
-      "phish_frac": 0.5015745709736392
+      "n": 82918,
+      "phishing": 41275,
+      "legitimate": 41643,
+      "phish_frac": 0.4977809402059866
     },
     "val": {
-      "n": 11455,
-      "phishing": 5738,
-      "legitimate": 5717,
-      "phish_frac": 0.5009166302924487
+      "n": 11109,
+      "phishing": 5552,
+      "legitimate": 5557,
+      "phish_frac": 0.499774957241876
     },
     "cal": {
-      "n": 12261,
-      "phishing": 6578,
-      "legitimate": 5683,
-      "phish_frac": 0.5364978386754751
+      "n": 15111,
+      "phishing": 8082,
+      "legitimate": 7029,
+      "phish_frac": 0.5348421679571174
     },
     "test": {
-      "n": 12087,
-      "phishing": 5452,
-      "legitimate": 6635,
-      "phish_frac": 0.4510631256722098
+      "n": 12174,
+      "phishing": 5747,
+      "legitimate": 6427,
+      "phish_frac": 0.4720716280597996
     }
   }
 }

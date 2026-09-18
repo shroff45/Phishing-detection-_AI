@@ -4,7 +4,10 @@ PhishGuard ML v4.1 — Synthetic Adversarial Dataset Generator
 Generates realistic phishing and legitimate URLs for training.
 
 Fixes applied:
-  - Fix 3/C: IP phishing vs legit distinguished by IP range, not path
+  - Fix 3/C (rev 2): legit IP half made feature-separable (clean
+    paths, no explicit port, mixed scheme) — no feature encodes IP
+    range, so range-only distinction was label noise; 20% of legit
+    rows kept as honest hard negatives
   - Fix 7:   Valid punycode with pre-validated homoglyphs
   - Fix 8:   Real domain+path combos for legitimate URLs
   - Fix B:   URL shortener generator REMOVED (adds noise, not signal)
@@ -92,11 +95,29 @@ def gen_typosquatting(count: int = 30000) -> List[Tuple[str, int, str]]:
     return urls[:count]
 
 
+def _validate_no_phish_keywords(url: str) -> None:
+    PHISH_KEYWORDS = {"secure", "account", "banking", "login", "signin", "verify", "update", "confirm", "password", "suspend", "alert", "unusual", "restore", "unlock"}
+    if any(kw in url.lower() for kw in PHISH_KEYWORDS):
+        raise ValueError(f"SYNTHETIC DATA CONTAINS PHISH KEYWORD: {url}")
+
+
 def gen_ip_based(count: int = 20000) -> List[Tuple[str, int, str]]:
     """
     Attack Class 2: IP-based hosting.
-    Fix C: Both phishing and legit IPs get mixed paths.
-    Distinction is PUBLIC vs PRIVATE IP ranges.
+
+    f17_isIpAddress is a single bit set for BOTH halves and no feature
+    encodes public-vs-private range, so the old "distinguish by IP
+    range" design put feature-identical rows under opposite labels —
+    pure label noise (~2/3 of run-2's test FPs came from it). Now the
+    legit half is feature-separable: 80% draw clean device-admin paths
+    (none in PHISH_KEYWORDS), carry no explicit port, and mix
+    https/http scheme. The remaining 20% keep the old keyword-path
+    style as honest hard negatives, so the model must tolerate private
+    router/NAS admin pages instead of learning a blanket "IP + login
+    path ⇒ phishing" rule. The phishing half is unchanged (public
+    IPs, all 12 paths, exotic ports, http) — golden-set URLs
+    45.67.89.123/login.php and 192.0.2.1:8080/signin live in that
+    region and must stay classified PHISHING.
     """
     urls: List[Tuple[str, int, str]] = []
 
@@ -106,8 +127,24 @@ def gen_ip_based(count: int = 20000) -> List[Tuple[str, int, str]]:
         "/api/health", "/account",
     ]
 
+    # Device-admin paths for the separable legit majority — none of
+    # these appear in PHISH_KEYWORDS, so these rows carry keyword-free
+    # signal instead of landing in the phishing path region.
+    clean_paths = [
+        "/", "/index.html", "/status", "/config",
+        "/api/health", "/dashboard", "/admin",
+    ]
+
+    # Invariant: the clean majority's paths must never collide with
+    # PHISH_KEYWORDS — that collision is the label noise this redesign
+    # removes. Fail loudly if either list ever drifts.
+    assert not any(
+        kw in path for path in clean_paths for kw in PHISH_KEYWORDS
+    ), "clean_paths must stay free of PHISH_KEYWORDS"
+
     phishing_count = int(count * 0.7)
     legit_count = count - phishing_count
+    hard_count = legit_count // 5  # ~20% honest hard negatives
 
     # Phishing: PUBLIC IPs
     private_first_octets = {10, 127, 172, 192}
@@ -123,8 +160,10 @@ def gen_ip_based(count: int = 20000) -> List[Tuple[str, int, str]]:
         port = random.choice(["", ":8080", ":8443", ":3000"])
         urls.append((f"http://{ip}{port}{path}", 1, "ip_phishing"))
 
-    # Legitimate: PRIVATE IPs (192.168.x.x, 10.x.x.x)
-    for _ in range(legit_count):
+    # Legitimate: PRIVATE IPs (192.168.x.x, 10.x.x.x) — 80% separable
+    # (clean path, no explicit port, mixed scheme), 20% honest hard
+    # negatives in the old keyword-path style.
+    for i in range(legit_count):
         ip_type = random.choice(["router", "nas", "internal"])
         if ip_type == "router":
             ip = random.choice(
@@ -137,12 +176,27 @@ def gen_ip_based(count: int = 20000) -> List[Tuple[str, int, str]]:
                 f"10.{random.randint(0, 255)}"
                 f".{random.randint(0, 255)}.{random.randint(1, 254)}"
             )
-        path = random.choice(all_paths)
-        port = random.choice(["", ":8080", ":9090", ":3000", ":80"])
-        urls.append((f"http://{ip}{port}{path}", 0, "ip_legitimate"))
+        if i < hard_count:
+            # Honest hard negative: keyword path, exotic port, http —
+            # the old style, kept so the model cannot learn a blanket
+            # "IP + login path ⇒ phishing" rule and must tolerate
+            # private router/NAS admin pages.
+            path = random.choice(all_paths)
+            port = random.choice(["", ":8080", ":9090", ":3000", ":80"])
+            scheme = "http://"
+        else:
+            # Feature-separable majority: clean path, no explicit port
+            # (f22=0), mixed scheme (f23 carries real signal — the
+            # phishing half is 100% http).
+            path = random.choice(clean_paths)
+            port = ""
+            scheme = random.choice(["https://", "http://"])
+        urls.append((f"{scheme}{ip}{port}{path}", 0, "ip_legitimate"))
 
     random.shuffle(urls)
-    print(f"  ✓ IP-based: {len(urls)} URLs ({phishing_count} phish, {legit_count} legit)")
+    print(f"  ✓ IP-based: {len(urls)} URLs ({phishing_count} phish, "
+          f"{legit_count} legit: {legit_count - hard_count} separable, "
+          f"{hard_count} hard)")
     return urls[:count]
 
 
@@ -414,3 +468,30 @@ def generate_all():
 
 if __name__ == "__main__":
     generate_all()
+
+def generate_legitimate_ip() -> str:
+    clean_paths = ["/", "/index.html", "/status", "/config", "/api/health", "/dashboard", "/admin"]
+    ip_type = random.choice(["router", "nas", "internal"])
+    if ip_type == "router":
+        ip = random.choice(["192.168.1.1", "192.168.0.1", "10.0.0.1", "10.0.1.1"])
+    elif ip_type == "nas":
+        ip = f"192.168.1.{random.randint(2, 254)}"
+    else:
+        ip = f"10.{random.randint(0, 255)}.{random.randint(0, 255)}.{random.randint(1, 254)}"
+    
+    path = random.choice(clean_paths)
+    scheme = random.choice(["https://", "http://"])
+    url = f"{scheme}{ip}{path}"
+    _validate_no_phish_keywords(url)
+    return url
+
+def generate_phishing_ip() -> str:
+    private_first_octets = {10, 127, 172, 192}
+    first_octet = random.choice([i for i in range(1, 224) if i not in private_first_octets])
+    ip = f"{first_octet}.{random.randint(0, 255)}.{random.randint(0, 255)}.{random.randint(1, 254)}"
+    clean_paths = ["/", "/index.html", "/status", "/config", "/api/health", "/dashboard", "/admin"]
+    path = random.choice(clean_paths)
+    port = random.choice(["", ":8080", ":8443", ":3000"])
+    url = f"http://{ip}{port}{path}"
+    _validate_no_phish_keywords(url)
+    return url

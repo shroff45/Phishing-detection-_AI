@@ -1,11 +1,57 @@
 {
   "shipped_threshold": 0.35,
-  "shipped_fpr": 0.03798040693293142,
-  "shipped_fnr": 0.03319882611885547,
-  "shipped_auc": 0.9931937064224546,
-  "test_accuracy": 0.9641763878547199,
+  "shipped_fpr": 0.031118717908822157,
+  "shipped_fnr": 0.022794501479032538,
+  "shipped_auc": 0.9951721450708387,
+  "test_accuracy": 0.9728109084935107,
   "known_url_pass": true,
+  "golden_set": {
+    "n_good": 50,
+    "n_bad": 50,
+    "good_ok": 46,
+    "bad_ok": 50,
+    "good_rate": 0.92,
+    "bad_rate": 1.0,
+    "accuracy": 0.96,
+    "good_misses": [
+      {
+        "url": "https://github.com",
+        "prob": 0.379098117351532,
+        "note": " \u2014 whitelist-covered in production"
+      },
+      {
+        "url": "https://www.sony.com",
+        "prob": 0.3958115577697754,
+        "note": ""
+      },
+      {
+        "url": "https://www.hulu.com",
+        "prob": 0.3958115577697754,
+        "note": ""
+      },
+      {
+        "url": "https://cloud.google.com",
+        "prob": 0.9105240702629089,
+        "note": " \u2014 whitelist-covered in production"
+      }
+    ],
+    "bad_misses": [],
+    "pass": true
+  },
   "pass": true,
   "gate_reasons": [],
-  "split_basis": "domain_disjoint_group_shuffle"
+  "split_basis": "domain_disjoint_group_shuffle",
+  "split_fingerprint": "rows=82918/11109/15111/12174;domains=94174",
+  "domain_isolation": {
+    "test_domains": 9418,
+    "shared_with_train": 0,
+    "shared_with_val": 0,
+    "shared_with_cal": 0,
+    "isolated": true
+  },
+  "test_error_domains": {
+    "total_errors": 331,
+    "distinct_domains": 277,
+    "multi_error_domains": 11
+  }
 }

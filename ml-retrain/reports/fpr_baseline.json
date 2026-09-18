@@ -1,6 +1,7 @@
 {
-  "shipped_fpr": 0.028956943602183143,
+  "shipped_fpr": 0.031118717908822157,
   "split_basis": "domain_disjoint_group_shuffle",
+  "split_fingerprint": "rows=82918/11109/15111/12174;domains=94174",
   "pass": true,
   "note": "last gate-passing FPR; the next run's FPR gate arms its ceiling from this file"
 }

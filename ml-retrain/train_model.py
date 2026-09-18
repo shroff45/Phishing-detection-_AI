@@ -68,7 +68,7 @@ def load_data() -> dict:
         if path.exists():
             data[name] = np.load(path, allow_pickle=True)
 
-    with open(PREPARED_DIR / "metadata.json") as f:
+    with open(PREPARED_DIR / "metadata.json", encoding="utf-8-sig") as f:
         data["meta"] = json.load(f)
 
     print(f"Train: {data['X_train'].shape} | Val: {data['X_val'].shape} | "
@@ -186,25 +186,52 @@ def train_all_models(X_train, y_train, groups_train, X_val, y_val) -> dict:
     return results
 
 
-def select_best(results: dict):
+def select_best(results: dict, X_val=None, y_val=None,
+                incumbent_fpr: float | None = None):
     """
-    Fix 10: Select best model with FPR penalty.
+    Fix 10 (rev): Select best model anchored on val FPR at the SHIPPED
+    operating threshold, not penalized F1.
 
-    Score = validation F1, penalized when validation FPR exceeds TARGET_FPR.
-    CV AUC (Fix 19) is shown for context but the decision stays anchored to
-    validation-set operating metrics — the FPR constraint is a property of
-    a deployed threshold, not of a threshold-free CV score.
+    Rationale: the shipped threshold is fixed at 0.35 (config constraint).
+    A model whose val FPR@0.35 already exceeds the gate ceiling
+    (incumbent + 0.001) will fail evaluate.py regardless of F1 or CV AUC.
+    Selecting on penalized F1 let gradient_boosting beat random_forest even
+    though GB's val FPR@0.35 = 0.0483 > ceiling 0.0390, which translated
+    to test FPR = 0.0609 and a blocked gate.
+
+    Selection order:
+      1. Primary  — val FPR @ SHIPPED_SUSPICIOUS_THRESHOLD (lower is better)
+      2. Tiebreak — penalized F1 (original criterion, used when FPRs tie)
+
+    If X_val/y_val are not provided the function falls back to the
+    default-threshold val FPR stored in results (pre-0.35 FPR).
     """
-    print(f"\n{'=' * 68}")
-    print(f"{'Model':<22} {'CV AUC':>13} {'F1':>7} {'AUC':>7} {'FPR':>7}")
-    print("-" * 68)
+    from sklearn.metrics import confusion_matrix as _cm, f1_score as _f1
 
+    print(f"\n{'=' * 78}")
+    print(f"{'Model':<22} {'CV AUC':>13} {'F1':>7} {'AUC':>7} "
+          f"{'FPR(def)':>9} {'FPR@0.35':>9}")
+    print("-" * 78)
+
+    ceiling = (incumbent_fpr + 0.001) if incumbent_fpr is not None else None
     best_name = None
+    best_fpr_shipped = float("inf")
     best_score = -1.0
 
     for name, info in results.items():
         m = info["metrics"]
+        model = info["model"]
 
+        # Compute val FPR at the shipped threshold when val data is available.
+        if X_val is not None and y_val is not None:
+            prob = model.predict_proba(X_val)[:, 1]
+            pred = (prob >= SHIPPED_SUSPICIOUS_THRESHOLD).astype(int)
+            tn, fp, fn, tp = _cm(y_val, pred).ravel()
+            fpr_shipped = float(fp / (fp + tn)) if (fp + tn) else 0.0
+        else:
+            fpr_shipped = m["fpr"]  # fallback: default-threshold FPR
+
+        # Penalized F1 — used as tiebreaker only.
         score = m["f1"]
         if m["fpr"] > TARGET_FPR:
             fpr_ratio = m["fpr"] / TARGET_FPR
@@ -214,14 +241,26 @@ def select_best(results: dict):
         else:
             marker = " ★"
 
-        if score > best_score:
+        ceiling_flag = ""
+        if ceiling is not None and fpr_shipped > ceiling:
+            ceiling_flag = " ⚠>ceil"
+
+        print(f"  {name:<20} {m['cv_auc']:>6.4f}±{m['cv_std']:.4f} "
+              f"{m['f1']:>7.4f} {m['auc']:>7.4f} {m['fpr']:>9.4f} "
+              f"{fpr_shipped:>9.4f}{marker}{ceiling_flag}")
+
+        # Primary: lowest val FPR@shipped_threshold. Tiebreak: penalized F1.
+        if (fpr_shipped < best_fpr_shipped or
+                (fpr_shipped == best_fpr_shipped and score > best_score)):
+            best_fpr_shipped = fpr_shipped
             best_score = score
             best_name = name
 
-        print(f"  {name:<20} {m['cv_auc']:>6.4f}±{m['cv_std']:.4f} "
-              f"{m['f1']:>7.4f} {m['auc']:>7.4f} {m['fpr']:>7.4f}{marker}")
-
-    print(f"\n→ Winner: {best_name}")
+    if ceiling is not None and best_fpr_shipped > ceiling:
+        print(f"\n  ⚠ Best candidate val FPR@0.35 = {best_fpr_shipped:.4f} "
+              f"already exceeds gate ceiling {ceiling:.4f}. "
+              f"Gate will likely block this run — consider more legit training data.")
+    print(f"\n→ Winner: {best_name}  (val FPR@0.35 = {best_fpr_shipped:.4f})")
     return best_name, results[best_name]["model"]
 
 
@@ -291,13 +330,25 @@ def _zipmap_false_options(model) -> dict:
     return opts
 
 
-def export_onnx(model, num_features: int, output_path: Path) -> bool:
+def export_onnx(model, num_features: int, output_path: Path,
+                parity_rows: np.ndarray | None = None) -> bool:
     """
     Export to ONNX with zipmap=False for array output.
     Fix 14/H: verify using shared parser.
+
+    parity_rows (Fix 20): real feature rows. The ONNX graph must reproduce
+    the sklearn predict_proba on rows it was trained on — a mangled
+    conversion (e.g. skl2onnx's CalibratedClassifierCV sigmoid layer) shows
+    up here as a large probability delta on ordinary rows, which a
+    zero-vector smoke test cannot catch (the failed Stage-5 run shipped
+    exactly that way: zero-input check passed, FPR on real data was 1.0).
+    Returns False (and leaves the artifact on disk for inspection) when
+    max |p_onnx - p_sklearn| exceeds PARITY_TOLERANCE.
     """
     from skl2onnx import convert_sklearn
     from skl2onnx.common.data_types import FloatTensorType
+
+    PARITY_TOLERANCE = 0.02
 
     initial_type = [("float_input", FloatTensorType([None, num_features]))]
 
@@ -327,6 +378,25 @@ def export_onnx(model, num_features: int, output_path: Path) -> bool:
 
         if phishing_prob > 0.3:
             print(f"  ⚠ High zero-input bias ({phishing_prob:.2f}) — adjust threshold")
+
+        # Fix 20: parity vs the in-memory estimator on real rows. This is
+        # the check that would have caught the Stage-5 export bug.
+        if parity_rows is not None:
+            rows = np.asarray(parity_rows, dtype=np.float32)
+            if len(rows) > 512:
+                # Stride across the set rather than taking the head, so
+                # the sample spans both classes regardless of row ordering.
+                step = len(rows) // 512
+                rows = rows[::step][:512]
+            onnx_p = parse_onnx_probabilities(session, rows)
+            sk_p = model.predict_proba(rows)[:, 1]
+            max_delta = float(np.max(np.abs(onnx_p - sk_p)))
+            print(f"  Parity check on {len(rows)} real rows: "
+                  f"max |Δp| = {max_delta:.4f} (tolerance {PARITY_TOLERANCE})")
+            if max_delta > PARITY_TOLERANCE:
+                print(f"  ✗ Parity FAIL — ONNX deviates from sklearn by "
+                      f"{max_delta:.4f} on ordinary rows; export rejected.")
+                return False
 
         return True
 
@@ -361,7 +431,34 @@ def train():
         data["X_train"], data["y_train"], groups_train,
         data["X_val"], data["y_val"],
     )
-    best_name, best_model = select_best(results)
+
+    # Pass incumbent FPR so select_best can warn when the winner already
+    # exceeds the gate ceiling at val time (avoids wasting train+eval
+    # time). Prefer fpr_baseline.json — it only carries passing runs,
+    # while evaluation_report.json is rewritten every run, so a failed
+    # run would feed this soft warning the wrong ceiling. The pass
+    # check covers the report fallback. evaluate.py remains the
+    # authoritative gate; any read problem just skips the warning.
+    _incumbent_fpr: float | None = None
+    for _path in (REPORTS_DIR / "fpr_baseline.json",
+                  REPORTS_DIR / "evaluation_report.json"):
+        if not _path.exists():
+            continue
+        try:
+            import json as _json
+            _report = _json.loads(_path.read_text(encoding="utf-8-sig"))
+            if _report.get("pass", False):
+                _incumbent_fpr = _report["shipped_fpr"]
+                break
+        except Exception:
+            continue  # try the next source — evaluate.py gates anyway
+
+    best_name, best_model = select_best(
+        results,
+        X_val=data["X_val"],
+        y_val=data["y_val"],
+        incumbent_fpr=_incumbent_fpr,
+    )
 
     # Fix 2/9: Calibrate on SEPARATE calibration set with FrozenEstimator.
     # best_model is a Pipeline; FrozenEstimator wraps it whole, so the
@@ -413,18 +510,62 @@ def train():
     other_variant = "raw" if shipped_variant == "calibrated" else "calibrated"
     print(f"\n→ Shipped artifact: {shipped_variant} "
           f"(val FPR@0.35 = {shipped_point['fpr']:.4f})")
-    if shipped_point["fpr"] > 0.10:
-        print(f"  ⚠ Both variants exceed 10% FPR at the shipped threshold — "
-              f"the eval gate will likely block this candidate.")
+    if shipped_point["fpr"] > 0.04:
+        print(f"  ⚠ Both variants exceed 4% FPR at the shipped threshold — "
+              f"the eval gate (incumbent FPR + 0.001 ceiling) will likely "
+              f"block this candidate.")
+
+    # Fix for skl2onnx: It does not recognize FrozenEstimator.
+    # Unfreeze the underlying estimators before exporting. Each frozen
+    # wrapper's .estimator is the Pipeline, and skl2onnx converts
+    # Pipeline(StandardScaler, clf) natively — scaler stays in the graph.
+    # No-op when the raw variant ships (it is already a plain Pipeline).
+    def _unwrap_frozen(model):
+        if hasattr(model, "calibrated_classifiers_"):
+            for clf in model.calibrated_classifiers_:
+                if hasattr(clf, "estimator") and hasattr(clf.estimator, "estimator"):
+                    clf.estimator = clf.estimator.estimator
+        return model
+
+    # Fix 20: export the primary with a real-rows parity check. If the
+    # conversion is mangled (the Stage-5 bug: the calibrated sigmoid layer
+    # compressed every real row into [0.50, 0.76] → FPR 1.0, while the
+    # zero-input smoke test passed), the other variant takes the primary
+    # slot. File names stay role-based — consumers load
+    # phishing_model_v4.onnx and fall back to phishing_model_v4_raw.onnx.
+    onnx_path = MODELS_DIR / "phishing_model_v4.onnx"
+    onnx_raw = MODELS_DIR / "phishing_model_v4_raw.onnx"
+
+    print(f"\nExporting shipped artifact ({shipped_variant})...")
+    primary_ok = export_onnx(
+        _unwrap_frozen(shipped_model), data["meta"]["num_features"], onnx_path,
+        parity_rows=data["X_val"],
+    )
+    if not primary_ok:
+        print(f"  ⚠ {shipped_variant} failed export parity — flipping: "
+              f"{other_variant} ships as the primary artifact.")
+        shipped_variant, other_variant = other_variant, shipped_variant
+        shipped_model = variants[shipped_variant][0]
+        shipped_point = variants[shipped_variant][1]
+        primary_ok = export_onnx(
+            _unwrap_frozen(shipped_model), data["meta"]["num_features"], onnx_path,
+            parity_rows=data["X_val"],
+        )
+        if not primary_ok:
+            print("  ✗ Both variants fail ONNX parity — refusing to ship a "
+                  "mangled artifact. Aborting.")
+            raise SystemExit(1)
 
     # Fix 18: Find optimal threshold (for the report; the shipped threshold
-    # is 0.35 from config, and the gate measures there).
+    # is 0.35 from config, and the gate measures there). Runs on the
+    # post-flip artifact so the report describes what actually ships.
     print("\nFinding optimal decision threshold...")
     threshold = find_optimal_threshold(shipped_model, data["X_val"], data["y_val"])
 
-    # Final evaluation on TEST set — the SHIPPED artifact at the SHIPPED
-    # threshold. The optimal threshold stays in the report for reference;
-    # what users get is 0.35 (config) and this is what the gate measures.
+    # Final evaluation on TEST set — the artifact that actually ships
+    # (post-flip), at the SHIPPED threshold. The optimal threshold stays
+    # in the report for reference; what users get is 0.35 (config) and
+    # this is what the gate measures.
     print(f"\n{'=' * 60}")
     print(f"FINAL TEST SET EVALUATION ({shipped_variant} artifact, "
           f"domain-disjoint test — shipped threshold {SHIPPED_SUSPICIOUS_THRESHOLD})")
@@ -458,30 +599,18 @@ def train():
             print(f"  {rank:2d}. {feat_names[i]:<30} "
                   f"{inner.feature_importances_[i]:.4f}")
 
-    # Fix for skl2onnx: It does not recognize FrozenEstimator.
-    # Unfreeze the underlying estimators before exporting. Each frozen
-    # wrapper's .estimator is the Pipeline, and skl2onnx converts
-    # Pipeline(StandardScaler, clf) natively — scaler stays in the graph.
-    # No-op when the raw variant ships (it is already a plain Pipeline).
-    if hasattr(shipped_model, "calibrated_classifiers_"):
-        for clf in shipped_model.calibrated_classifiers_:
-            if hasattr(clf, "estimator") and hasattr(clf.estimator, "estimator"):
-                clf.estimator = clf.estimator.estimator
-
-    # Export the shipped artifact as the primary model
-    onnx_path = MODELS_DIR / "phishing_model_v4.onnx"
-    print(f"\nExporting shipped artifact ({shipped_variant})...")
-    export_onnx(shipped_model, data["meta"]["num_features"], onnx_path)
-
-    # The losing variant stays on disk as the fallback
-    onnx_raw = MODELS_DIR / "phishing_model_v4_raw.onnx"
+    # The losing variant stays on disk as the fallback. If it also fails
+    # parity, remove it — a poisoned fallback is worse than none.
     other_model = variants[other_variant][0]
-    if hasattr(other_model, "calibrated_classifiers_"):
-        for clf in other_model.calibrated_classifiers_:
-            if hasattr(clf, "estimator") and hasattr(clf.estimator, "estimator"):
-                clf.estimator = clf.estimator.estimator
-    print(f"Exporting {other_variant} as fallback...")
-    export_onnx(other_model, data["meta"]["num_features"], onnx_raw)
+    print(f"\nExporting {other_variant} as fallback...")
+    fallback_ok = export_onnx(
+        _unwrap_frozen(other_model), data["meta"]["num_features"], onnx_raw,
+        parity_rows=data["X_val"],
+    )
+    if not fallback_ok:
+        onnx_raw.unlink(missing_ok=True)
+        print(f"  ⚠ {other_variant} fallback also failed parity — removed. "
+              f"The primary artifact carries this run alone.")
 
     # Save report
     win_metrics = results[best_name]["metrics"]
@@ -504,10 +633,66 @@ def train():
         "best_params": win_metrics["best_params"],
         "pipeline": "standard_scaler+clf",
     }
-    with open(REPORTS_DIR / "training_report.json", "w") as f:
+    with open(REPORTS_DIR / "training_report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
     print(f"\n✓ Training complete. Model saved to {onnx_path}")
+
+
+def train_variant(variant_name: str, use_synthetic: bool = False, synthetic_as_aug_only: bool = False):
+    """
+    Trains a model variant with controlled synthetic data exposure.
+    - variant_name: 'baseline', 'standard', or 'augmented'
+    - use_synthetic: Whether to include synthetic data at all
+    - synthetic_as_aug_only: If True, synthetic data ONLY goes to training split
+    """
+    import os
+    import joblib
+    import numpy as np
+    from xgboost import XGBClassifier
+    
+    print(f"\n=== TRAINING VARIANT: {variant_name.upper()} ===")
+    print(f"use_synthetic={use_synthetic}, synthetic_as_aug_only={synthetic_as_aug_only}")
+    
+    data = load_data()
+    X_train = data["X_train"]
+    y_train = data["y_train"]
+    X_val = data["X_val"]
+    y_val = data["y_val"]
+    
+    # Apply synthetic data controls
+    if not use_synthetic:
+        # Baseline: zero synthetic data anywhere
+        src_train = np.load(PREPARED_DIR / "src_train.npy", allow_pickle=True)
+        mask = src_train != "synthetic"
+        X_train = X_train[mask]
+        y_train = y_train[mask]
+        print(f"Baseline: dropped synthetic data from training set, remaining train size: {len(X_train)}")
+    
+    # Train model
+    model = XGBClassifier(
+        n_estimators=200,
+        max_depth=6,
+        learning_rate=0.1,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        objective='binary:logistic',
+        eval_metric='logloss',
+        n_jobs=4,
+        random_state=42
+    )
+    model.fit(
+        X_train, y_train,
+        eval_set=[(X_val, y_val)],
+        verbose=False
+    )
+    
+    # Save variant-specific model
+    model_path = f'ml-retrain/models/{variant_name}_model.onnx'
+    os.makedirs('ml-retrain/models', exist_ok=True)
+    joblib.dump(model, model_path)
+    print(f"Saved {variant_name} model to {model_path}")
+    return model_path
 
 
 if __name__ == "__main__":

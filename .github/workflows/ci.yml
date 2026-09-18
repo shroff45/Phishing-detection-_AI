@@ -63,6 +63,15 @@ jobs:
           cd ml-retrain
           pip install -r requirements.txt
 
+      - name: Regenerate prepared arrays (deterministic)
+        # X_*.npy / src_test.npy / groups_*.npy are untracked (472a3a9).
+        # prepare_data.py is seeded (RANDOM_STATE=42) and reads only
+        # tracked CSVs — datasets/ + synthetic/synthetic_adversarial.csv —
+        # so it rebuilds the exact split evaluate.py expects.
+        run: |
+          cd ml-retrain
+          python prepare_data.py
+
       - name: Run the evaluation gate
         # evaluate.py exits non-zero on gate failure, so a regression
         # fails this job. The committed evaluation_report.json is the

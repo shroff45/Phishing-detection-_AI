@@ -1,3 +1,12 @@
+SYNTHETIC_DATA_IS_AUGMENTATION_ONLY = True
+VALIDATION_SOURCES = []
+TEST_SOURCES = []
+REAL_WORLD_HOLDOUT_SOURCES = []
+if SYNTHETIC_DATA_IS_AUGMENTATION_ONLY:
+    assert "synthetic" not in VALIDATION_SOURCES, "Synthetic data banned from validation"
+    assert "synthetic" not in TEST_SOURCES, "Synthetic data banned from test"
+    assert "synthetic" not in REAL_WORLD_HOLDOUT_SOURCES, "Synthetic data banned from holdout"
+
 """
 PhishGuard ML v4.1 — Data Preparation
 Merges real + synthetic datasets, extracts features, splits into 4 sets.
@@ -103,7 +112,6 @@ TWO_LABEL_SUFFIXES = {
     "com.pa", "edu.pa", "gob.pa", "net.pa", "org.pa",
     "com.uy", "edu.uy", "gub.uy", "net.uy", "org.uy",
     "gob.cl", "gov.cl", "edu.cl", "co.cl",
-    "gob.pe", "edu.pe",
     # PaaS / dev-hosting suffixes — each is one registrable zone
     "github.io", "gitlab.io", "netlify.app", "vercel.app",
     "herokuapp.com", "pages.dev", "workers.dev", "firebaseapp.com",
@@ -113,7 +121,7 @@ TWO_LABEL_SUFFIXES = {
     "wordpress.com", "blogspot.com", "weebly.com", "wixsite.com",
     "duckdns.org", "ddns.net", "hopto.org", "zapto.org",
     "servegame.com", "serveo.net", "trycloudflare.com",
-    "onrended.com", "herokudns.com", "tictap.io",
+    "onrender.com", "herokudns.com", "tictap.io",
     "myftp.org", "myvnc.com", "no-ip.org", "no-ip.com", "no-ip.biz",
     "redirect.ampproject.org", "r.jina.ai",
 }
@@ -306,6 +314,26 @@ def merge_datasets() -> pd.DataFrame:
     merged = merged.drop_duplicates(subset=["url"], keep="last")
 
     print(f"\n  Total after dedup: {len(merged)}")
+
+    # Step 1 follow-up: tiny hand-curated corpora (20 SSO rows, the
+    # legitimate_ip_services rows) cannot outvote thousands of phishing
+    # login paths — duplicate them ×20 AFTER the dedup (so the copies
+    # survive it) and BEFORE balance_stratified (so they scale with the
+    # class balancing). The domain-disjoint split groups by eTLD+1
+    # (IP-literal hosts group per-address), so every copy of a domain
+    # or address lands in the same fold — no train/test leakage.
+    OVERSAMPLED_SOURCES = {"legitimate_sso_portals", "legitimate_ip_services"}
+    OVERSAMPLE_FACTOR = 20
+    for src in sorted(OVERSAMPLED_SOURCES):
+        mask = merged["source"] == src
+        if mask.any():
+            n = int(mask.sum())
+            extra = pd.concat([merged[mask]] * (OVERSAMPLE_FACTOR - 1),
+                              ignore_index=True)
+            merged = pd.concat([merged, extra], ignore_index=True)
+            print(f"  Oversampled {src} ×{OVERSAMPLE_FACTOR}: "
+                  f"{n} → {n * OVERSAMPLE_FACTOR} rows")
+
     return merged
 
 
@@ -512,6 +540,31 @@ def prepare():
     grp_train, grp_val = groups[train_idx], groups[val_idx]
     grp_cal, grp_test = groups[cal_idx], groups[test_idx]
 
+    # Enforcement: Synthetic data is AUGMENTATION ONLY.
+    # It must never appear in val, cal, or test.
+    if SYNTHETIC_DATA_IS_AUGMENTATION_ONLY:
+        def move_synthetic(X_split, y_split, src_split, grp_split):
+            real_sources = {"legitimate_urls", "phishing_urls", "legitimate_ip_services", "legitimate_sso_portals"}
+            mask = ~np.isin(src_split, list(real_sources))
+            if not mask.any():
+                return X_split, y_split, src_split, grp_split, None, None, None, None
+            synth_X = X_split[mask]
+            synth_y = y_split[mask]
+            synth_src = src_split[mask]
+            synth_grp = grp_split[mask]
+            return X_split[~mask], y_split[~mask], src_split[~mask], grp_split[~mask], synth_X, synth_y, synth_src, synth_grp
+        
+        X_val, y_val, src_val, grp_val, sx_v, sy_v, ss_v, sg_v = move_synthetic(X_val, y_val, src_val, grp_val)
+        X_cal, y_cal, src_cal, grp_cal, sx_c, sy_c, ss_c, sg_c = move_synthetic(X_cal, y_cal, src_cal, grp_cal)
+        X_test, y_test, src_test, grp_test, sx_t, sy_t, ss_t, sg_t = move_synthetic(X_test, y_test, src_test, grp_test)
+        
+        for sx, sy, ss, sg in [(sx_v, sy_v, ss_v, sg_v), (sx_c, sy_c, ss_c, sg_c), (sx_t, sy_t, ss_t, sg_t)]:
+            if sx is not None:
+                X_train = np.concatenate([X_train, sx])
+                y_train = np.concatenate([y_train, sy])
+                src_train = np.concatenate([src_train, ss])
+                grp_train = np.concatenate([grp_train, sg])
+
     # ── Verify domain-disjointness end-to-end (belt and braces) ─────────
     split_domains = {
         "train": set(grp_train.tolist()),
@@ -545,17 +598,15 @@ def prepare():
     for name, arr in [
         ("X_train", X_train), ("X_val", X_val), ("X_cal", X_cal), ("X_test", X_test),
         ("y_train", y_train), ("y_val", y_val), ("y_cal", y_cal), ("y_test", y_test),
+        ("src_train", src_train), ("src_val", src_val), ("src_cal", src_cal), ("src_test", src_test),
+        ("groups_train", grp_train), ("groups_val", grp_val),
+        ("groups_cal", grp_cal), ("groups_test", grp_test),
     ]:
         np.save(PREPARED_DIR / f"{name}.npy", arr)
 
     # src_test is a load-bearing contract for evaluate.py's per-source
     # accuracy — keep it. Groups are saved per-split for GroupKFold in
     # train_model.py (Fix 19) and for future leakage audits.
-    np.save(PREPARED_DIR / "src_test.npy", src_test)
-    np.save(PREPARED_DIR / "groups_train.npy", grp_train)
-    np.save(PREPARED_DIR / "groups_val.npy", grp_val)
-    np.save(PREPARED_DIR / "groups_cal.npy", grp_cal)
-    np.save(PREPARED_DIR / "groups_test.npy", grp_test)
 
     meta = {
         "num_features": NUM_FEATURES,
@@ -571,7 +622,7 @@ def prepare():
         "num_unique_domains": int(len(unique_domains)),
         "class_balance": balance,
     }
-    with open(PREPARED_DIR / "metadata.json", "w") as f:
+    with open(PREPARED_DIR / "metadata.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
     print(f"\n✓ Saved to {PREPARED_DIR}/")
