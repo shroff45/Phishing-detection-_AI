@@ -246,6 +246,21 @@ the extension. Don't add it back.
   until Redis recovers. Either way this throttles abusive request volume but
   does not prevent all abuse — a distributed attacker with many IPs can still
   consume resources.
+- **Per-install rate-limit keying (experimental, default off).** Setting
+  `INSTALL_TOKEN_ENABLED=true` teaches the rate limiter to honour an
+  `X-Install-Token` request header: when the flag is on AND the header value
+  matches `^[A-Za-z0-9._-]{1,64}$`, that request is limited under
+  `install:<token>` instead of its client IP — the token **replaces** the IP
+  key (it is never combined with IP or path). Flag off, header missing, or
+  invalid header all fall back to the existing per-IP limiting, unchanged.
+  The token is **caller-supplied and freely rotatable**: this gives honest
+  clients per-install fairness (one install's burst doesn't burn a shared IP
+  quota), but it is **not** a security boundary or an anti-abuse wall — an
+  attacker can mint a fresh token per request, so global per-IP limiting
+  remains the fallback for header-less traffic, and the in-memory store caps
+  its keyspace (100k distinct keys, dormant keys evicted first) so token
+  churn cannot grow memory unboundedly. Leave disabled unless you
+  specifically need it.
 - For production deployments with external clients, consider per-install token
   issuance rather than a shared static key.
 - This project is a **research prototype**. Rate limiting is a layer of defence,

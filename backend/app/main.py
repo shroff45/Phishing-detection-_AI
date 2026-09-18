@@ -3,6 +3,7 @@ PhishGuard Backend — FastAPI Application
 ─────────────────────────────────────────
 """
 import asyncio
+import re
 import time
 import uuid
 from collections import defaultdict
@@ -49,6 +50,14 @@ def _parse_rate_limit(value: str) -> tuple:
 
 _RATE_MAX, _RATE_WINDOW = _parse_rate_limit(settings.RATE_LIMIT)
 
+# Optional per-install rate-limit keying (INSTALL_TOKEN_ENABLED, default off).
+# Caller-supplied token, not an auth credential: it must never carry structure
+# the limiter would interpret, so the alphabet is kept to [A-Za-z0-9._-] —
+# no ':' (the Redis key is "phishguard:ratelimit:<key>:<bucket>", and ':'
+# would blur its segments), no whitespace, no control chars, hard-capped
+# at 64 chars.
+_INSTALL_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
 
 # ── Rate limiting: pluggable storage ─────────────────────────────────────────
 # In-memory is the default and preserves the original single-process behaviour
@@ -62,12 +71,39 @@ _RATE_MAX, _RATE_WINDOW = _parse_rate_limit(settings.RATE_LIMIT)
 class InMemoryRateStore:
     """Sliding-window store for a single process. Zero dependencies.
 
-    Bounded memory: entries older than the window are pruned on each check.
+    Bounded memory: entries older than the window are pruned on each check,
+    AND the keyspace itself is capped at ``max_keys`` distinct keys. The cap
+    matters once keys stop being client IPs: with per-install token keying
+    (INSTALL_TOKEN_ENABLED) an attacker rotates tokens freely, and an
+    uncapped dict would let each rotation leak one dict entry.
     Uses time.monotonic() for drift-free windowing.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_keys: int = 100_000) -> None:
+        if max_keys < 1:
+            raise ValueError("max_keys must be >= 1")
         self._hits: dict[str, list[float]] = defaultdict(list)
+        self._max_keys = max_keys
+
+    def _evict_for(self, now: float, window: float) -> None:
+        """Make room for one new key.
+
+        First sweep drops dormant keys — every timestamp outside the window
+        carries no live quota state, so evicting them changes nothing about
+        who is currently limited. If nothing is dormant (a real rotation
+        flood inside a single window), fall back to evicting the
+        oldest-inserted entries until there is room. Eviction only ever
+        costs an evicted key its history; every retained key keeps full
+        quota enforcement.
+        """
+        for stale in [
+            key
+            for key, ts in self._hits.items()
+            if not any(now - t < window for t in ts)
+        ]:
+            del self._hits[stale]
+        while len(self._hits) >= self._max_keys:
+            self._hits.pop(next(iter(self._hits)))
 
     def hit(self, key: str, max_requests: int, window: float) -> Optional[int]:
         """Register a request for ``key``.
@@ -76,6 +112,8 @@ class InMemoryRateStore:
         or None when it is allowed.
         """
         now = time.monotonic()
+        if key not in self._hits and len(self._hits) >= self._max_keys:
+            self._evict_for(now, window)
         timestamps = [t for t in self._hits[key] if now - t < window]
         if len(timestamps) >= max_requests:
             self._hits[key] = timestamps
@@ -167,12 +205,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     Storage is pluggable (in-memory default, Redis when REDIS_URL is set);
     the 429/Retry-After response contract is identical for both backends.
+
+    Optional per-install keying (INSTALL_TOKEN_ENABLED, default off): a
+    request carrying a syntactically valid X-Install-Token header is
+    limited under install:<token> INSTEAD of its IP — the token replaces
+    the key wholesale, it is never combined with IP or path. Missing or
+    invalid header falls back to IP limiting unchanged. The flag is read
+    once at construction from settings; the constructor signature is
+    deliberately untouched (test_rate_limit pins its defaults).
     """
 
     def __init__(self, app, max_requests: int = _RATE_MAX, window: float = _RATE_WINDOW, store=None):
         super().__init__(app)
         self.max_requests = max_requests
         self.window = window
+        self.install_token_enabled = bool(
+            getattr(settings, "INSTALL_TOKEN_ENABLED", False)
+        )
         if store is None:
             self.store, self.backend = _build_rate_store()
         else:
@@ -190,7 +239,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         client_ip = request.client.host if request.client else "unknown"
-        retry_after = self.store.hit(client_ip, self.max_requests, self.window)
+        key = client_ip
+        if self.install_token_enabled:
+            token = request.headers.get("X-Install-Token")
+            if token and _INSTALL_TOKEN_RE.match(token):
+                key = f"install:{token}"
+        retry_after = self.store.hit(key, self.max_requests, self.window)
         if retry_after is not None:
             return Response(
                 content='{"detail":"Rate limit exceeded. Try again later."}',

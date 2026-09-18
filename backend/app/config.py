@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     # Rate limiting
     RATE_LIMIT: str = Field(default="100/minute")
 
+    # Per-install rate-limit keying (experimental; default off). When true, a
+    # request carrying a valid X-Install-Token header is rate-limited under
+    # install:<token> instead of its client IP. The token is caller-supplied
+    # and freely rotatable — this is per-install fairness for honest clients,
+    # never an authentication boundary or anti-abuse wall.
+    INSTALL_TOKEN_ENABLED: bool = Field(default=False)
+
     # API authentication (optional — skip auth if empty)
     EXTENSION_API_KEY: str = Field(default="")
 
