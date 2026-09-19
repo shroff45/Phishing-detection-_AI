@@ -17,13 +17,19 @@ Security posture (each rule is a hard boundary, not a preference):
     destination between two navigations (same rule as signals.py).
 
   • SSRF is refused, not mitigated — the entry URL must resolve to
-    a public address, and every request from the page to a literal
-    private/loopback host is aborted mid-flight. The sandbox has no
-    ambient credentials, but it must not become a probe of the
-    backend's own localhost surface either. Residual risk: a DNS
-    rebinding target that resolves public at the entry check and
-    private at request time is only caught after the fact — noted in
-    the result, never silently passed.
+    a public address, and EVERY request the page issues (each redirect
+    hop, each subresource) is re-resolved mid-flight: any resolved
+    address that is not public aborts the request. DNS verdicts are
+    cached per detonation, so a host that flips addresses BETWEEN two
+    requests of one detonation is a documented residual; a host that
+    redirects INTO a private address is not. Unresolvable hosts and
+    guard errors fail closed — the request is aborted, never continued.
+
+  • Concurrency is bounded — at most settings.MAX_CONCURRENT_DETONATIONS
+    browsers are alive at once; excess detonations queue. Each active
+    detonation is hard-cancelled at settings.DETONATION_TOTAL_S via
+    asyncio.wait_for around the entire browser block, so a slow page is
+    interrupted at the budget instead of being reported late.
 
   • Screenshots are sanitized — form field values are blanked and
     password/file inputs removed from the DOM before capture, and
@@ -45,22 +51,26 @@ import asyncio
 import base64
 import ipaddress
 import socket
+import threading
 import time
+import weakref
 from typing import Optional
 from urllib.parse import urlsplit
 
 import structlog
 
+from app.config import settings
 from app.services.signals import SHORTENER_DOMAINS_SET
 
 logger = structlog.get_logger(__name__)
 
 # ── Budgets (seconds) ────────────────────────────────────────────────────────
 # Mirrors the signals.py doctrine: every tool hard-capped, one slow
-# detonation cannot consume the event loop.
+# detonation cannot consume the event loop. The whole-detonation budget
+# (DETONATION_TOTAL_S) and the concurrency cap (MAX_CONCURRENT_DETONATIONS)
+# live on app.config.settings so deployments can size them without a rebuild.
 PAGE_LOAD_TIMEOUT_S = 15.0   # single page.goto budget
 SETTLE_S = 2.0               # JS settle window before telemetry capture
-DETONATION_TOTAL_S = 30.0    # independent cap for the whole detonation
 
 # ── Redirects ────────────────────────────────────────────────────────────────
 MAX_REDIRECTS = 10           # must match signals.MAX_REDIRECTS
@@ -82,6 +92,33 @@ class SandboxTargetError(ValueError):
     private/loopback/reserved address. Client error, not a crash."""
 
 
+# ── Concurrency cap ──────────────────────────────────────────────────────────
+# One semaphore per running event loop. A single module-global Semaphore
+# would bind itself to the first loop that contends for it and then raise
+# "bound to a different event loop" for any later loop — pytest binds a
+# fresh loop per test and TestClient runs its own portal loop. Production
+# (uvicorn) runs one loop per worker process, so the registry holds one
+# semaphore per worker: the cap applies per worker process, NOT globally —
+# with --workers N the ceiling is N × MAX_CONCURRENT_DETONATIONS, so size
+# MAX_CONCURRENT_DETONATIONS / workers accordingly.
+_DETONATION_SEMAPHORES: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, asyncio.Semaphore
+] = weakref.WeakKeyDictionary()
+_DETONATION_SEMAPHORES_LOCK = threading.Lock()
+
+
+def _detonation_semaphore() -> asyncio.Semaphore:
+    """The detonation-slot semaphore for the CURRENT running loop, created
+    from settings on first use (so tests can size it via monkeypatch)."""
+    loop = asyncio.get_running_loop()
+    with _DETONATION_SEMAPHORES_LOCK:
+        sem = _DETONATION_SEMAPHORES.get(loop)
+        if sem is None:
+            sem = asyncio.Semaphore(settings.MAX_CONCURRENT_DETONATIONS)
+            _DETONATION_SEMAPHORES[loop] = sem
+    return sem
+
+
 # ── SSRF guard ────────────────────────────────────────────────────────────────
 def _ip_is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Explicit chain (not just `not is_private`) — same doctrine as
@@ -99,10 +136,10 @@ def _ip_is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 
 
 def _host_is_obviously_local(host: Optional[str]) -> bool:
-    """Fast literal check used per-request inside the route guard —
-    no DNS in the request path (the entry guard did the resolution).
-    Hostnames are left to the entry guard; DNS rebinding after the
-    entry check is a documented residual, flagged in the result."""
+    """Literal fast-path inside the route guard: localhost names and
+    non-public IP literals are refused without spending a DNS lookup.
+    Hostnames are NOT classifiable here — the route guard re-resolves
+    them (verdicts cached per detonation in detonate_url)."""
     if not host:
         return False
     h = host.lower()
@@ -111,8 +148,21 @@ def _host_is_obviously_local(host: Optional[str]) -> bool:
     try:
         ip = ipaddress.ip_address(h)
     except ValueError:
-        return False  # a hostname — verdict unknown here, entry guard resolved it
+        return False  # a hostname — the route guard resolves it
     return not _ip_is_public(ip)
+
+
+def _resolve_ips(host: str) -> list:
+    """All addresses `host` resolves to. Runs via asyncio.to_thread at
+    call sites (getaddrinfo blocks). Raises socket.gaierror for
+    unresolvable hosts — callers treat that as 'cannot classify'."""
+    ips = []
+    for info in socket.getaddrinfo(host, None):
+        try:
+            ips.append(ipaddress.ip_address(info[4][0]))
+        except ValueError:
+            continue  # not an IP literal form getaddrinfo produced — skip
+    return ips
 
 
 def _assert_public_http_target(url: str) -> None:
@@ -412,6 +462,13 @@ async def detonate_url(url: str) -> dict:
         "blocked_local": 0,   # requests the route guard refused
     }
 
+    # Per-detonation DNS verdict cache for the route guard: each hostname
+    # is resolved at most once per detonation. Values: list of IPs, or
+    # None for a failed resolution (cached — a failing host is refused on
+    # every request without a second lookup).
+    dns_cache: dict[str, Optional[list]] = {}
+    _DNS_MISS = object()
+
     # Doubly-lazy: main.py imports this module inside its handler, and
     # playwright itself loads only here — so a machine without browsers
     # still gets the SSRF entry guard above (→ 400 for refused targets)
@@ -420,126 +477,206 @@ async def detonate_url(url: str) -> dict:
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
     from playwright.async_api import async_playwright
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=["--no-first-run", "--disable-dev-shm-usage"],
-        )
-        try:
-            # Fresh context per detonation: no cookies, no storage, no
-            # extensions, no shared state with any previous detonation.
-            context = await browser.new_context(
-                user_agent=SANDBOX_USER_AGENT,
-                viewport=VIEWPORT,
-                locale="en-US",
-                timezone_id="UTC",
+    async def _browser_block():
+        """Launch → navigate → telemetry → screenshot → close, all inside
+        the concurrency slot and the hard total budget (the caller wraps
+        this in the semaphore and asyncio.wait_for)."""
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=["--no-first-run", "--disable-dev-shm-usage"],
             )
-            page = await context.new_page()
+            try:
+                # Fresh context per detonation: no cookies, no storage, no
+                # extensions, no shared state with any previous detonation.
+                context = await browser.new_context(
+                    user_agent=SANDBOX_USER_AGENT,
+                    viewport=VIEWPORT,
+                    locale="en-US",
+                    timezone_id="UTC",
+                )
+                page = await context.new_page()
 
-            def on_request(request) -> None:
-                try:  # telemetry only — never let the observer kill the run
-                    if not request.is_navigation_request():
-                        return
-                    frame = request.frame
-                    if frame is not None and frame is not page.main_frame:
-                        return  # sub-frame navigations are not chain hops
-                    hop_url = request.url
-                    state["chain"].append(hop_url)
-                    if hop_url in state["seen"]:
-                        state["looped"] = True
-                    state["seen"].add(hop_url)
-                    if len(state["chain"]) - 1 >= MAX_REDIRECTS:
-                        state["hop_cap_hit"] = True
-                except Exception:
-                    pass
-
-            page.on("request", on_request)
-
-            async def route_guard(route, request) -> None:
-                try:
-                    host = urlsplit(request.url).hostname
-                    if _host_is_obviously_local(host):
-                        # The page tried to reach a private/loopback
-                        # target — refuse mid-flight and say so.
-                        state["blocked_local"] += 1
-                        await route.abort("blockedbyclient")
-                        return
-                    if (request.is_navigation_request()
-                            and len(state["chain"]) > MAX_REDIRECTS):
-                        state["hop_cap_hit"] = True
-                        await route.abort("blockedbyclient")
-                        return
-                    await route.continue_()
-                except Exception:
-                    try:
-                        await route.continue_()
+                def on_request(request) -> None:
+                    try:  # telemetry only — never let the observer kill the run
+                        if not request.is_navigation_request():
+                            return
+                        frame = request.frame
+                        if frame is not None and frame is not page.main_frame:
+                            return  # sub-frame navigations are not chain hops
+                        hop_url = request.url
+                        state["chain"].append(hop_url)
+                        if hop_url in state["seen"]:
+                            state["looped"] = True
+                        state["seen"].add(hop_url)
+                        if len(state["chain"]) - 1 >= MAX_REDIRECTS:
+                            state["hop_cap_hit"] = True
                     except Exception:
                         pass
 
-            await context.route("**/*", route_guard)
+                page.on("request", on_request)
 
-            # ── navigate ────────────────────────────────────────────────
-            status = "detonated"
-            goto_error: Optional[str] = None
-            try:
-                await page.goto(
-                    url,
-                    wait_until="domcontentloaded",
-                    timeout=PAGE_LOAD_TIMEOUT_S * 1000,
-                )
-            except PlaywrightTimeoutError:
-                status = "timeout"
-                goto_error = "page load timed out"
-            except PlaywrightError as exc:
-                # Chrome's own refusal (bad DNS, too many redirects,
-                # or our route guard's blockedbyclient) lands here.
-                status = "unavailable"
-                goto_error = str(exc)
+                async def route_guard(route, request) -> None:
+                    """Runs for EVERY request the page issues — Playwright
+                    re-enters route interception for each hop of a redirect
+                    chain and every subresource. Classification is by
+                    resolution, not by string shape: a public-looking
+                    hostname that resolves to a non-public address is
+                    refused (redirect-phase SSRF). Any URL carrying a
+                    hostname is classified whatever its scheme, and only
+                    http(s) traffic is ever continued. Fails CLOSED: DNS
+                    failure or any guard error aborts, never continues."""
+                    try:
+                        parts = urlsplit(request.url)
+                        host = parts.hostname
+                        # EVERY URL carrying a hostname is fully classified
+                        # (literal fast-path + DNS), whatever its scheme —
+                        # gating on http(s) here let e.g. ws://127.0.0.1
+                        # fall through to continue_ (fail OPEN on a guard
+                        # whose doctrine is fail closed). Hostless schemes
+                        # (about:, data:, blob:) skip classification and
+                        # pass through exactly as before.
+                        if host:
+                            if _host_is_obviously_local(host):
+                                # Literal private/loopback — no lookup spent.
+                                state["blocked_local"] += 1
+                                await route.abort("blockedbyclient")
+                                return
+                            verdict = dns_cache.get(host, _DNS_MISS)
+                            if verdict is _DNS_MISS:
+                                try:
+                                    verdict = await asyncio.to_thread(
+                                        _resolve_ips, host
+                                    )
+                                except Exception:
+                                    verdict = None
+                                dns_cache[host] = verdict
+                            if not verdict:
+                                # Unresolvable (or nothing parseable): cannot
+                                # classify → refuse. Not counted as
+                                # blocked_local — a DNS failure is not
+                                # evidence of private probing.
+                                logger.warning(
+                                    "sandbox_route_dns_failed", host=host
+                                )
+                                await route.abort("blockedbyclient")
+                                return
+                            if any(not _ip_is_public(ip) for ip in verdict):
+                                # The page tried to reach a host that
+                                # resolves to a private/loopback address —
+                                # refuse mid-flight and say so.
+                                state["blocked_local"] += 1
+                                await route.abort("blockedbyclient")
+                                return
+                            if parts.scheme not in ("http", "https"):
+                                # Host classified PUBLIC, but only HTTP(S)
+                                # traffic may leave the sandbox — a
+                                # ws:/ftp:/etc. request out of a detonation
+                                # is hostile by construction. Distinct abort
+                                # code so logs separate this from
+                                # DNS-driven refusals.
+                                state["blocked_local"] += 1
+                                await route.abort("accessdenied")
+                                return
+                        if (request.is_navigation_request()
+                                and len(state["chain"]) > MAX_REDIRECTS):
+                            state["hop_cap_hit"] = True
+                            await route.abort("blockedbyclient")
+                            return
+                        await route.continue_()
+                    except Exception:
+                        # Fail CLOSED: a guard that cannot decide must not
+                        # let the request through.
+                        logger.warning("sandbox_route_guard_error", exc_info=True)
+                        try:
+                            await route.abort("blockedbyclient")
+                        except Exception:
+                            pass
 
-            # ── DOM telemetry ────────────────────────────────────────────
-            content_signals: Optional[dict] = None
-            if status != "unavailable":
+                await context.route("**/*", route_guard)
+
+                # ── navigate ────────────────────────────────────────────────
+                status = "detonated"
+                goto_error: Optional[str] = None
                 try:
-                    await page.evaluate(_OBSERVER_JS)
-                    await asyncio.wait_for(
-                        page.wait_for_timeout(SETTLE_S * 1000),
-                        SETTLE_S + 1.0,
+                    await page.goto(
+                        url,
+                        wait_until="domcontentloaded",
+                        timeout=PAGE_LOAD_TIMEOUT_S * 1000,
                     )
-                    content_signals = await page.evaluate(_TELEMETRY_JS)
-                except Exception as exc:
-                    logger.debug("dom_telemetry_failed", url=url, error=str(exc))
+                except PlaywrightTimeoutError:
+                    status = "timeout"
+                    goto_error = "page load timed out"
+                except PlaywrightError as exc:
+                    # Chrome's own refusal (bad DNS, too many redirects,
+                    # or our route guard's blockedbyclient) lands here.
+                    status = "unavailable"
+                    goto_error = str(exc)
 
-            # ── sanitized screenshot ─────────────────────────────────────
-            screenshot_b64: Optional[str] = None
-            screenshot_bytes: Optional[int] = None
-            if status != "unavailable":
-                try:
-                    await page.evaluate(_SANITIZE_JS)
-                    shot = await asyncio.wait_for(
-                        page.screenshot(
-                            type="jpeg",
-                            quality=SCREENSHOT_JPEG_QUALITY,
-                            full_page=False,
-                        ),
-                        PAGE_LOAD_TIMEOUT_S,
-                    )
-                    if len(shot) > SCREENSHOT_MAX_BYTES:
-                        # Oversize → dropped, not resized. The cap is a
-                        # boundary, not a suggestion.
-                        logger.warning(
-                            "screenshot_over_cap_dropped",
-                            url=url,
-                            bytes=len(shot),
+                # ── DOM telemetry ────────────────────────────────────────────
+                content_signals: Optional[dict] = None
+                if status != "unavailable":
+                    try:
+                        await page.evaluate(_OBSERVER_JS)
+                        await asyncio.wait_for(
+                            page.wait_for_timeout(SETTLE_S * 1000),
+                            SETTLE_S + 1.0,
                         )
-                    else:
-                        screenshot_bytes = len(shot)
-                        screenshot_b64 = base64.b64encode(shot).decode("ascii")
-                except Exception as exc:
-                    logger.debug("screenshot_failed", url=url, error=str(exc))
+                        content_signals = await page.evaluate(_TELEMETRY_JS)
+                    except Exception as exc:
+                        logger.debug("dom_telemetry_failed", url=url, error=str(exc))
 
-            await context.close()
-        finally:
-            await browser.close()
+                # ── sanitized screenshot ─────────────────────────────────────
+                screenshot_b64: Optional[str] = None
+                screenshot_bytes: Optional[int] = None
+                if status != "unavailable":
+                    try:
+                        await page.evaluate(_SANITIZE_JS)
+                        shot = await asyncio.wait_for(
+                            page.screenshot(
+                                type="jpeg",
+                                quality=SCREENSHOT_JPEG_QUALITY,
+                                full_page=False,
+                            ),
+                            PAGE_LOAD_TIMEOUT_S,
+                        )
+                        if len(shot) > SCREENSHOT_MAX_BYTES:
+                            # Oversize → dropped, not resized. The cap is a
+                            # boundary, not a suggestion.
+                            logger.warning(
+                                "screenshot_over_cap_dropped",
+                                url=url,
+                                bytes=len(shot),
+                            )
+                        else:
+                            screenshot_bytes = len(shot)
+                            screenshot_b64 = base64.b64encode(shot).decode("ascii")
+                    except Exception as exc:
+                        logger.debug("screenshot_failed", url=url, error=str(exc))
+
+                await context.close()
+            finally:
+                await browser.close()
+
+        return status, goto_error, content_signals, screenshot_b64, screenshot_bytes
+
+    # Bounded concurrency + hard total budget: at most
+    # settings.MAX_CONCURRENT_DETONATIONS browsers are alive at once (the
+    # slot is held for the WHOLE browser block, launch through close), and
+    # asyncio.wait_for cancels the block at settings.DETONATION_TOTAL_S —
+    # the timeout interrupts the work, it does not merely report late.
+    # The slot release is the context manager's job, guaranteed on every
+    # exit path including cancellation.
+    async with _detonation_semaphore():
+        (
+            status,
+            goto_error,
+            content_signals,
+            screenshot_b64,
+            screenshot_bytes,
+        ) = await asyncio.wait_for(
+            _browser_block(), timeout=settings.DETONATION_TOTAL_S
+        )
 
     # ── chain analysis (observe-only — no scoring here) ──────────────────
     chain = state["chain"] or [url]
@@ -579,8 +716,10 @@ async def detonate_url(url: str) -> dict:
         reasons.append("DOM telemetry unavailable — not counted")
 
     elapsed = round(time.monotonic() - started, 2)
-    if elapsed >= DETONATION_TOTAL_S:  # budget already spent — stop here
-        raise asyncio.TimeoutError()
+    # No post-hoc budget check here: the whole-detonation budget is
+    # enforced by asyncio.wait_for around the browser block above, which
+    # CANCELS the work at settings.DETONATION_TOTAL_S instead of letting
+    # it run to completion and only then noticing.
 
     result = {
         "url": url,

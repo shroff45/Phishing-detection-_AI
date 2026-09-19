@@ -234,6 +234,13 @@ the extension. Don't add it back.
 - Backend authentication is **disabled by default** — when `EXTENSION_API_KEY`
   is empty (the default), the `verify_api_key` dependency skips validation.
   Set the key in `backend/.env` for deployment environments.
+- The empty default above is a **dev-only convenience, pinned by the test
+  suite**: in any non-dev deployment you MUST set `EXTENSION_API_KEY`, or
+  `/api/v1/investigate/detonate` — and every other endpoint — is reachable
+  with no credential at all. As noted above, even when set the key is a
+  shared dev-contract marker, not a security boundary; treat "unset in a
+  non-dev environment" as a misconfiguration to monitor for, not a risk the
+  key itself would solve.
 - **Rate limiting** is enforced per client IP, configured by `RATE_LIMIT` in
   `config.py` (default: `100/minute`). By default it runs as an in-memory
   sliding window scoped to a single process — running multiple backend

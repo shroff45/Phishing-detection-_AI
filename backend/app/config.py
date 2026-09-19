@@ -40,6 +40,22 @@ class Settings(BaseSettings):
     # API authentication (optional — skip auth if empty)
     EXTENSION_API_KEY: str = Field(default="")
 
+    # Sandbox detonation bounds (env-driven). Chromium is heavy: at most
+    # MAX_CONCURRENT_DETONATIONS browsers are alive at once PER WORKER —
+    # the cap applies per worker process, so with uvicorn --workers N the
+    # ceiling is N × MAX_CONCURRENT_DETONATIONS; size
+    # MAX_CONCURRENT_DETONATIONS / workers accordingly. Excess requests
+    # queue for a slot instead of exhausting the host. Every active
+    # detonation is hard-CANCELLED at DETONATION_TOTAL_S (the asyncio.wait_for
+    # budget wraps the whole browser block, so a slow page is interrupted,
+    # not merely reported late). Keep TOTAL comfortably above the crawler's
+    # internal budgets (page load 15s + settle 2s + telemetry/screenshot).
+    # Both are gt=0: a 0 cap would hang every detonation on a semaphore
+    # that never opens, a 0 budget would 504 every request, and negatives
+    # would crash at first use.
+    MAX_CONCURRENT_DETONATIONS: int = Field(default=3, gt=0)
+    DETONATION_TOTAL_S: float = Field(default=30.0, gt=0)
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

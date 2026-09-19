@@ -173,6 +173,31 @@ class TestHostileAndMalformedInput:
         )
         assert result["is_impersonation"] is False
 
+    def test_malformed_features_surface_markers_in_details(self, analyzer):
+        """Pins the malformed-marker contract the code INTENDS to write:
+        a malformed favicon hash and a malformed colour summary must each
+        appear as details[...] = "malformed" in a normal (non-degraded)
+        result — not silently collapse the whole check into _degraded.
+
+        Regression pin: `details` used to be written before it was
+        constructed, so these writes raised UnboundLocalError, the outer
+        except swallowed it into _degraded, and the markers never
+        appeared — this test fails on that old code (KeyError)."""
+        result = analyzer.analyze_features(
+            {
+                "favicon_ahash": "not-a-256-bit-hash",
+                "color_summary": "not-a-list",
+                "color_source": "favicon",
+            },
+            "https://evil.example/",
+        )
+        assert result["is_impersonation"] is False
+        assert result["brand_detected"] is None
+        assert result["similarity_score"] == 0.0
+        assert "degraded" not in result["details"]
+        assert result["details"]["favicon_ahash"] == "malformed"
+        assert result["details"]["color_summary"] == "malformed"
+
 
 class TestDegradedInputs:
     """Fail-visible: absent features report why, never silently "safe"."""

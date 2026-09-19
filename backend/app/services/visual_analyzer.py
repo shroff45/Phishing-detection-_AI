@@ -166,6 +166,15 @@ class VisualAnalyzer:
             colors = features.get("color_summary")
             color_source = features.get("color_source")
 
+            # details must exist BEFORE any branch writes into it — the
+            # malformed markers below are part of the reported contract.
+            # (Writing before construction raised UnboundLocalError, which
+            # the outer except swallowed into _degraded, silently dropping
+            # the markers.)
+            details: Dict[str, Any] = {
+                "color_source": color_source,
+            }
+
             # No favicon hash at all → the visual check is degraded (no
             # favicon reachable, or derivation failed). Reported, never
             # silently read as "checked and clean".
@@ -216,9 +225,6 @@ class VisualAnalyzer:
             elif colors is not None and not isinstance(colors, list):
                 details["color_summary"] = "malformed"
 
-            details: Dict[str, Any] = {
-                "color_source": color_source,
-            }
             if brand_detected is not None:
                 details["favicon_bits_from_reference"] = hash_distance
                 details["color_match_ratio"] = round(color_ratio, 3)
