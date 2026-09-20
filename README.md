@@ -270,6 +270,8 @@ the extension. Don't add it back.
   specifically need it.
 - For production deployments with external clients, consider per-install token
   issuance rather than a shared static key.
+- The extension treats a backend verdict's severity as a **floor**: local boosts
+  (e.g. BitB, brand impersonation) may raise it, but never lower it.
 - This project is a **research prototype**. Rate limiting is a layer of defence,
   not a guarantee of safety. Do not treat it as production-ready.
 

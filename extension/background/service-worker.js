@@ -63,6 +63,20 @@ let autoScan = true;
 // the options-page toggle that previously saved to nothing.
 let showWarningOverlay = true;
 
+// Verdict severity order (defense-in-depth; see header doctrine, line 11:
+// NEVER downgrade a phishing verdict from backend). A verdict adopted from
+// the backend is a severity FLOOR: subsequent local boosts (BitB, brand
+// impersonation) may RAISE it but must NEVER lower it — e.g. an incoherent
+// backend response of verdict="phishing" with score<0.65 must stay phishing
+// even when a boost recompute would threshold the score down to "suspicious".
+// Unknown/unrated strings rank below "safe" so boosts still lift them.
+const VERDICT_SEVERITY = { safe: 0, suspicious: 1, phishing: 2 };
+
+/** Return whichever of two verdicts has the higher severity rank. */
+function moreSevereVerdict(a, b) {
+  return (VERDICT_SEVERITY[a] ?? -1) >= (VERDICT_SEVERITY[b] ?? -1) ? a : b;
+}
+
 // Load user-configured backend URL
 chrome.storage.local.get(['settings'], (result) => {
   if (result.settings?.backendUrl) {
@@ -644,7 +658,10 @@ async function analyzeUrl(tabId, url) {
         // Retrieve any state that arrived during the await
         const current = tabResults.get(tabId) || result;
         
-        // Authoritative verdict exclusively server-side
+        // Authoritative verdict exclusively server-side — and per the header
+        // doctrine (top of file: NEVER downgrade a backend verdict), br.verdict
+        // is a severity FLOOR from here on: boosts below may raise it, never
+        // lower it.
         result = {
           url,
           verdict: br.verdict,
@@ -656,14 +673,18 @@ async function analyzeUrl(tabId, url) {
           evidence_trail: br.evidence_trail || [],
           stage3_signals: br.stage3_signals || null,
         };
-        
+
         // Re-apply content signals if they arrived
         if (current.contentSignals) {
           result.contentSignals = current.contentSignals;
           if (current.contentSignals.hasBitB) {
              result.score = Math.min(1.0, result.score + 0.3);
              result.reasons.push("Browser-in-the-Browser (BitB) attack detected");
-             result.verdict = result.score >= 0.65 ? "phishing" : "suspicious";
+             // Floor-clamped: the recompute may only raise the backend verdict.
+             result.verdict = moreSevereVerdict(
+               result.score >= 0.65 ? "phishing" : "suspicious",
+               br.verdict
+             );
           }
         }
 
@@ -817,14 +838,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           if (message.signals.hasBitB) {
             existing.score = Math.min(1.0, existing.score + 0.3);
             existing.reasons.push("Browser-in-the-Browser (BitB) attack detected");
-            existing.verdict = existing.score >= 0.65 ? "phishing" : "suspicious";
+            // Floor-clamped: the stored verdict may be an adopted backend
+            // verdict — the boost recompute may raise it, never lower it.
+            existing.verdict = moreSevereVerdict(
+              existing.score >= 0.65 ? "phishing" : "suspicious",
+              existing.verdict
+            );
             updateBadge(tabId, existing.verdict, existing.score);
           }
           // Boost for brand impersonation detected in content
           if (message.signals.hasBrandImpersonation) {
             existing.score = Math.min(1.0, existing.score + 0.25);
             existing.reasons.push(`Content impersonates ${message.signals.brandDetected}`);
-            existing.verdict = existing.score >= 0.65 ? "phishing" : "suspicious";
+            existing.verdict = moreSevereVerdict(
+              existing.score >= 0.65 ? "phishing" : "suspicious",
+              existing.verdict
+            );
             updateBadge(tabId, existing.verdict, existing.score);
           }
           storeResult(tabId, existing);
